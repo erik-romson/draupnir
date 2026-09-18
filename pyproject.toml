@@ -1,0 +1,55 @@
+[project]
+name = "draupnir"
+dynamic = ["version"]
+description = "A terminal dashboard and command line tool for working on several clones of one git repository at the same time."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["textual>=8.2,<9"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.urls]
+Homepage = "https://github.com/erik-romson/draupnir"
+Repository = "https://github.com/erik-romson/draupnir"
+Issues = "https://github.com/erik-romson/draupnir/issues"
+
+[project.scripts]
+draupnir = "draupnir.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.32"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/draupnir/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/draupnir"]
+
+[dependency-groups]
+dev = ["pytest>=9", "pytest-asyncio>=1.4", "ruff>=0.16", "pyright>=1.1.414"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["tmp"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

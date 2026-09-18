@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set the git user for the tests
+        run: |
+          git config --global user.name "draupnir CI"
+          git config --global user.email "draupnir-ci@example.com"
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Check formatting
+        run: uv run ruff format --check
+
+      - name: Type check
+        run: uv run pyright
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build the wheel
+        run: uv build
+
+      - name: Install the wheel into a fresh tool environment
+        run: |
+          uv tool install dist/*.whl
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+
+      - name: Run the installed command
+        run: draupnir --version

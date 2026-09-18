@@ -1,1 +1,14 @@
+# Planning package and pipeline run state. Never committed.
+/tmp/
+*.checkpoint
+*.history
+*.runs/
 
+# Local tooling and caches.
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+dist/
+.idea/
+plan_with_review.*
