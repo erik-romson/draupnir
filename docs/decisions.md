@@ -106,6 +106,14 @@ earlier commit, sleeps until 80% of it, and then polls every twentieth of it, be
 reset when fewer than 50 requests are left. Until a build appears, it still polls every
 `poll-seconds`, so the grace period keeps working.
 
+**D40. What an earlier build is.** A commit on main often has jobs from later runs, such as a
+scheduled CodeQL analysis or a second deploy hours after the push. Measuring from the first job to
+the last one made a 20 minute build look like 11 hours, and the wait then slept for hours. So the
+estimate counts only the first run of each job name or status context. It also stops at the first
+gap of more than 15 minutes, because a job that waits for another one starts when that one ends.
+The wait for the expected end is also capped at 15 minutes at a time, so a wrong estimate costs a
+few extra requests instead of hours of silence.
+
 **D35. Around the merge.** The flow reads the pull request again after the build. One that GitHub
 already merged, with the pushed commit as head, counts as merged. A closed one stops the flow. After
 a merge, a failed fetch or update is only logged. A merge state that stays `UNKNOWN` after five

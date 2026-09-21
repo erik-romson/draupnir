@@ -78,9 +78,12 @@ A wait for a build asks GitHub as little as it can, so it stays far below the ra
   `grace-seconds`.
 - It estimates the build time from the finished build of one of the last three earlier commits.
   It then waits until 80% of that time has passed, and asks every twentieth of it after that.
+- The estimate counts only the first run of each job. A job that starts more than 15 minutes
+  after the rest of the build has ended belongs to a later run, such as a scheduled analysis,
+  and does not count.
 - Without an estimate, the pause grows with the time already waited.
-- Between two reads, it waits at most 2 minutes. The one exception is the first wait for the
-  expected end of the build.
+- Between two reads, it waits at most 2 minutes. The exception is the wait for the expected end
+  of the build, which lasts at most 15 minutes at a time.
 - Before each read, it checks GitHub's rate limit, which costs nothing. When fewer than 50
   requests are left, it waits until the limit resets.
 

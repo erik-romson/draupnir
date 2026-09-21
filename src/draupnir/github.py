@@ -285,11 +285,18 @@ def build_state(repo: Path, sha: str) -> BuildState:
 # A wait never asks GitHub less often than this, so a long build still ends within 2 minutes.
 MAX_POLL_SECONDS = 120.0
 
+# A wait for the expected end of a build is never longer than this, so a wrong estimate
+# cannot make a wait silent for hours.
+MAX_FIRST_WAIT_SECONDS = 900.0
+
 # With an estimate, the first poll after a build appears is at this share of the estimate.
 EXPECTED_END_SHARE = 0.8
 
 # How many earlier commits an estimate looks at. Each costs two or three GitHub requests.
 ESTIMATE_COMMITS = 3
+
+# A job that starts this long after the rest of a build has ended belongs to a later run.
+BUILD_GAP_SECONDS = 900.0
 
 # An estimate is kept this long, per clone, for the life of the process.
 ESTIMATE_CACHE_SECONDS = 3600.0
@@ -317,36 +324,58 @@ def _timestamp(value: object) -> datetime | None:
 def _finished_build_span(repo: Path, sha: str) -> float | None:
     """How long the finished build of sha took, in seconds, or None when it is not known.
 
-    The span runs from the first check run start or commit status to the last check run end or
-    commit status. It is None when sha has no build, or when any job has not finished.
+    A commit often has jobs from later runs too, for example a scheduled analysis or a deploy
+    hours after the push. So only the first run of each check run name or status context
+    counts, and the span ends at the first gap longer than BUILD_GAP_SECONDS. The span is None
+    when sha has no build, or when a counted job has not finished.
     """
-    starts: list[datetime] = []
-    ends: list[datetime] = []
+    first_runs: dict[str, tuple[datetime | None, datetime | None]] = {}
     for check in _read_all_pages(repo, sha, "check-runs", "check_runs", CHECK_RUNS_READ):
         started = _timestamp(check.get("started_at"))
         completed = _timestamp(check.get("completed_at"))
-        if check.get("status") != "completed" or started is None or completed is None:
-            return None
-        starts.append(started)
-        ends.append(completed)
+        if check.get("status") != "completed":
+            completed = None
+        name = _text(check, "name")
+        earlier = first_runs.get(name)
+        if earlier is None or (
+            started is not None and (earlier[0] is None or started < earlier[0])
+        ):
+            first_runs[name] = (started, completed)
 
     data = _gh_json(repo, "api", f"repos/{{owner}}/{{repo}}/commits/{sha}/statuses?per_page=100")
     entries = cast(list[object], data) if isinstance(data, list) else []
-    latest_state: dict[str, object] = {}
-    # GitHub lists the statuses of a commit newest first.
+    created_states: list[tuple[datetime, str, object]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         status = cast(dict[str, object], entry)
         created = _timestamp(status.get("created_at"))
-        if created is None:
-            continue
-        latest_state.setdefault(_text(status, "context"), status.get("state"))
-        starts.append(created)
-        ends.append(created)
-    if "pending" in latest_state.values() or not starts:
+        if created is not None:
+            created_states.append((created, _text(status, "context"), status.get("state")))
+    # A status context counts from its first status to its first status that is not pending.
+    for created, context, state in sorted(created_states, key=lambda item: item[0]):
+        earlier = first_runs.get(context)
+        if earlier is None:
+            earlier = first_runs[context] = (created, None)
+        if earlier[1] is None and state != "pending":
+            first_runs[context] = (earlier[0], created)
+
+    spans: list[tuple[datetime, datetime | None]] = []
+    for started, completed in first_runs.values():
+        if started is None:
+            return None
+        spans.append((started, completed))
+    if not spans:
         return None
-    return (max(ends) - min(starts)).total_seconds()
+    spans.sort(key=lambda span: span[0])
+    build_start = build_end = spans[0][0]
+    for started, completed in spans:
+        if (started - build_end).total_seconds() > BUILD_GAP_SECONDS:
+            break
+        if completed is None:
+            return None
+        build_end = max(build_end, completed)
+    return (build_end - build_start).total_seconds()
 
 
 def estimate_build_seconds(repo: Path, sha: str) -> float | None:
@@ -383,14 +412,15 @@ def poll_delay(
     Until a build appears, it polls every poll_seconds, so the grace period works. With an
     estimate, it waits until EXPECTED_END_SHARE of it has passed, then polls every twentieth of
     it. Without one, the pause grows with the time already waited. Between polls, it waits at
-    least poll_seconds and at most MAX_POLL_SECONDS, except for the one wait for the expected end.
+    least poll_seconds and at most MAX_POLL_SECONDS. A wait for the expected end is at most
+    MAX_FIRST_WAIT_SECONDS.
     """
     if not build_seen:
         return poll_seconds
     if estimate is not None:
         expected_end = estimate * EXPECTED_END_SHARE
         if elapsed < expected_end:
-            return max(poll_seconds, expected_end - elapsed)
+            return max(poll_seconds, min(MAX_FIRST_WAIT_SECONDS, expected_end - elapsed))
         return min(MAX_POLL_SECONDS, max(poll_seconds, estimate / 20))
     return min(MAX_POLL_SECONDS, max(poll_seconds, elapsed / 10))
 

@@ -18,6 +18,7 @@ from draupnir.github import (
     CANCELLED,
     FAILURE,
     MAX_FAILED_POLLS,
+    MAX_FIRST_WAIT_SECONDS,
     MAX_POLL_SECONDS,
     NONE,
     PENDING,
@@ -393,6 +394,9 @@ def test_poll_delay_waits_for_the_expected_end_then_polls_more_often() -> None:
     assert poll_delay(100, 600, 15, build_seen=True) == 380
     assert poll_delay(500, 600, 15, build_seen=True) == 30
     assert poll_delay(6000, 7200, 15, build_seen=True) == MAX_POLL_SECONDS
+    # A long estimate: every wait before the expected end is capped.
+    assert poll_delay(0, 40000, 15, build_seen=True) == MAX_FIRST_WAIT_SECONDS
+    assert poll_delay(900, 40000, 15, build_seen=True) == MAX_FIRST_WAIT_SECONDS
     # Without an estimate: the pause grows with the time waited.
     assert poll_delay(30, None, 15, build_seen=True) == 15
     assert poll_delay(600, None, 15, build_seen=True) == 60
@@ -423,6 +427,40 @@ def test_estimate_reads_commit_statuses_and_skips_an_unfinished_build(env: Env) 
     )
 
     assert estimate_build_seconds(env.main, newer) == 300
+
+
+def test_estimate_ignores_later_runs_on_the_same_commit(env: Env) -> None:
+    older, newer = _two_commits(env)
+    env.gh.set_build(
+        older,
+        [
+            Poll(
+                check_runs=[
+                    CheckRun(
+                        "build",
+                        started_at="2026-09-17T10:00:00Z",
+                        completed_at="2026-09-17T10:10:00Z",
+                    ),
+                    # A job that waits for build starts when build ends.
+                    CheckRun(
+                        "deploy",
+                        started_at="2026-09-17T10:10:00Z",
+                        completed_at="2026-09-17T10:20:00Z",
+                    ),
+                    # A second run of deploy, hours later.
+                    CheckRun(
+                        "deploy",
+                        started_at="2026-09-17T13:00:00Z",
+                        completed_at="2026-09-17T14:00:00Z",
+                    ),
+                    # A scheduled job the next morning, still running.
+                    CheckRun("analyze", started_at="2026-09-18T08:00:00Z", status="in_progress"),
+                ]
+            )
+        ],
+    )
+
+    assert estimate_build_seconds(env.main, newer) == 1200
 
 
 def test_wait_sleeps_until_the_expected_end_of_the_build(env: Env) -> None:
