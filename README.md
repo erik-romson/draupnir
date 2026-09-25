@@ -50,6 +50,19 @@ uv run --project [path to local checkout] draupnir init
 ```
 
 
+### Restart the dashboards after cmux relaunches
+
+cmux restores its tabs after an update, but it does not start a dashboard again. Save the command
+once in each dashboard tab, before you start the dashboard there:
+
+```
+cmux surface resume set -- uv run --project [path to local checkout] draupnir
+```
+
+After cmux relaunches, run `bin/cmux-resume` from the checkout. It starts the command again in
+every tab where it was saved, and skips tabs that already run something. `--dry-run` shows what it
+would do. `--open-missing` opens a new workspace for a saved command whose tab is gone.
+
 ## Commands
 
 | Command | What it does |

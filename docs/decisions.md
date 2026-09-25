@@ -167,3 +167,10 @@ never committed.
 
 **D36. CI builds and installs the package.** After the gate, CI builds the wheel, installs it, and
 runs `draupnir --version`.
+
+**D44. A script restarts the dashboards after cmux relaunches.** cmux restarts agent sessions
+itself, but a command saved with `cmux surface resume set` stays manual. Only a choice in the cmux
+window can make it restart on its own, and cmux signs that choice with a key in the Keychain. So
+`bin/cmux-resume` reads the saved commands from the cmux config and types each one into the
+terminals that cmux bound to it. It skips a terminal that runs something, and it matches terminals
+by their binding rather than by folder, because many shells share a folder.

@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Start the saved resume commands again in cmux terminals after cmux relaunches.
+
+cmux keeps restart commands for terminals in the `terminal.resumeCommands` list of its config
+file. A command that was saved from the command line stays manual, so cmux does not run it when
+it relaunches. This script reads that list. It then finds the terminals that cmux bound to one of
+those commands, and types the command into each of them that sits idle at a shell prompt. A
+terminal that runs anything else is left alone.
+"""
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+DEFAULT_CONFIG = Path.home() / ".config" / "cmux" / "cmux.json"
+TIMEOUT_SECONDS = 15
+
+
+@dataclass(frozen=True)
+class ResumeCommand:
+    cwd: str
+    argv: list[str]
+
+
+@dataclass(frozen=True)
+class Terminal:
+    workspace_id: str
+    surface_ref: str
+    title: str
+    tty: str | None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Start the saved cmux resume commands again after cmux relaunches."
+    )
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="the cmux config file")
+    parser.add_argument("--match", help="only commands that contain this text")
+    parser.add_argument(
+        "--open-missing",
+        action="store_true",
+        help="open a new workspace for a command that has no terminal",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="print what would happen")
+    args = parser.parse_args()
+
+    commands = read_resume_commands(args.config)
+    if args.match:
+        commands = [c for c in commands if args.match in shlex.join(c.argv)]
+    if not commands:
+        print(f"{args.config} has no resume commands to start.")
+        return 0
+
+    bound = [
+        (terminal, binding)
+        for terminal in list_terminals()
+        if (binding := bound_command(terminal)) is not None
+    ]
+    for command in commands:
+        terminals = [
+            (terminal, binding) for terminal, binding in bound if matches(binding, command)
+        ]
+        for terminal, binding in terminals:
+            if not is_idle(terminal.tty):
+                print(f"busy     {command.cwd} ({terminal.title})")
+                continue
+            print(f"start    {command.cwd} ({terminal.title})")
+            if not args.dry_run:
+                send(terminal, f"cd {shlex.quote(binding.cwd)} && {shlex.join(binding.argv)}")
+        if terminals:
+            continue
+        if args.open_missing:
+            print(f"open     {command.cwd} (new workspace)")
+            if not args.dry_run:
+                open_workspace(command)
+        else:
+            print(f"missing  {command.cwd} has no terminal. Use --open-missing to open one.")
+    return 0
+
+
+def read_resume_commands(config: Path) -> list[ResumeCommand]:
+    """Reads the resume commands. The file is JSON with `//` comment lines."""
+    try:
+        text = config.read_text()
+    except OSError as error:
+        sys.exit(f"Cannot read {config}: {error.strerror}.")
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
+    try:
+        settings: dict[str, Any] = json.loads("\n".join(lines))
+    except json.JSONDecodeError as error:
+        sys.exit(f"{config} is not valid JSON at line {error.lineno}. Fix the file and try again.")
+    terminal: dict[str, Any] = settings.get("terminal") or {}
+    entries: list[dict[str, Any]] = terminal.get("resumeCommands") or []
+    return [
+        ResumeCommand(cwd=entry["cwd"], argv=entry["commandPrefix"])
+        for entry in entries
+        if entry.get("cwd") and entry.get("commandPrefix")
+    ]
+
+
+def list_terminals() -> list[Terminal]:
+    tree: dict[str, Any] = json.loads(run(["cmux", "tree", "--all", "--json"]))
+    return [
+        Terminal(workspace["id"], surface["ref"], workspace.get("title") or "", surface.get("tty"))
+        for window in tree["windows"]
+        for workspace in window["workspaces"]
+        for pane in workspace["panes"]
+        for surface in pane["surfaces"]
+        if surface.get("type") == "terminal"
+    ]
+
+
+def matches(binding: ResumeCommand, command: ResumeCommand) -> bool:
+    """Says whether a terminal's command falls under a saved command, which is a prefix."""
+    if os.path.realpath(binding.cwd) != os.path.realpath(command.cwd):
+        return False
+    return binding.argv[: len(command.argv)] == command.argv
+
+
+def bound_command(terminal: Terminal) -> ResumeCommand | None:
+    """Reads the command cmux bound to the terminal. Agent sessions are left to cmux."""
+    output = run(
+        [
+            "cmux",
+            "surface",
+            "resume",
+            "show",
+            "--json",
+            "--workspace",
+            terminal.workspace_id,
+            "--surface",
+            terminal.surface_ref,
+        ]
+    )
+    shown: dict[str, Any] = json.loads(output)
+    binding: dict[str, Any] = shown.get("resume_binding") or {}
+    launch: dict[str, Any] = binding.get("launch_command") or {}
+    argv: list[str] = launch.get("arguments") or []
+    if not argv and binding.get("command"):
+        argv = shlex.split(binding["command"])
+    if binding.get("source") == "agent-hook" or not argv or not binding.get("cwd"):
+        return None
+    return ResumeCommand(cwd=binding["cwd"], argv=argv)
+
+
+def is_idle(tty: str | None) -> bool:
+    """Says whether the terminal sits at a shell prompt.
+
+    A terminal in a workspace that was not shown yet has no tty. cmux starts it when it gets
+    input, so it counts as idle.
+
+    The shell is the process whose parent is not on the terminal, or whose parent is `login`.
+    The terminal is idle when the shell is the only process in the foreground, which `ps` marks
+    with a `+`.
+    """
+    if tty is None:
+        return True
+    rows = run(["ps", "-t", tty, "-o", "pid=,ppid=,stat=,command="]).splitlines()
+    processes = [fields for fields in (row.split(None, 3) for row in rows) if len(fields) == 4]
+    logins = {pid for pid, _, _, argv in processes if argv.startswith("/usr/bin/login")}
+    pids = {pid for pid, _, _, _ in processes} - logins
+    shells = [pid for pid, ppid, _, _ in processes if pid in pids and ppid not in pids]
+    foreground = [pid for pid, _, stat, _ in processes if pid in pids and "+" in stat]
+    return len(shells) == 1 and foreground == shells
+
+
+def send(terminal: Terminal, command_line: str) -> None:
+    run(
+        [
+            "cmux",
+            "send",
+            "--workspace",
+            terminal.workspace_id,
+            "--surface",
+            terminal.surface_ref,
+            command_line + "\\n",
+        ]
+    )
+
+
+def open_workspace(command: ResumeCommand) -> None:
+    run(
+        [
+            "cmux",
+            "new-workspace",
+            "--name",
+            Path(command.cwd).name,
+            "--cwd",
+            command.cwd,
+            "--command",
+            shlex.join(command.argv),
+        ]
+    )
+
+
+def run(argv: list[str], check: bool = True) -> str:
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        sys.exit(f"{argv[0]} is not installed or not on the PATH.")
+    except subprocess.TimeoutExpired:
+        sys.exit(f"{shlex.join(argv)} did not answer within {TIMEOUT_SECONDS} seconds.")
+    if check and result.returncode != 0:
+        sys.exit(f"{shlex.join(argv)} failed: {result.stderr.strip() or result.stdout.strip()}")
+    return result.stdout
+
+
+if __name__ == "__main__":
+    sys.exit(main())
