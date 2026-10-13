@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import traceback
 from collections.abc import Callable
@@ -13,9 +14,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
+from draupnir.config import CONFIG_FILE_NAME
 from draupnir.errors import OperationError, RebaseConflict
 from draupnir.github import CANCELLED, SUCCESS, BuildState, build_result_message
-from draupnir.ide import open_ide
+from draupnir.ide import editor_command, in_cmux, open_cmux_workspace, open_ide
 from draupnir.operations import (
     MERGED,
     PrOutcome,
@@ -43,11 +45,13 @@ ConflictCallback = Callable[[list[str]], None]
 BuildCallback = Callable[[BuildState], None]
 SuccessCallback = Callable[[object], None]
 
-# The buttons of the Projects tab that are always shown. Fast-forward main depends on the config.
+# The buttons of the Projects tab that are always shown. Fast-forward main depends on the config,
+# and New cmux workspace on whether draupnir runs in cmux.
 _BASE_SHOWN_ACTIONS = frozenset(
     {
         "fetch-all",
         "refresh",
+        "config",
         "open-branch",
         "open-ide",
         "rebase",
@@ -76,7 +80,9 @@ class DraupnirApp(App[None]):
         Binding("r", "refresh_status", "Refresh"),
         Binding("f", "fetch_all", "Fetch all"),
         Binding("o", "open_ide", "Open IDE"),
+        Binding("w", "open_cmux_workspace", "cmux workspace"),
         Binding("b", "open_branch", "Open branch"),
+        Binding("c", "edit_config", "Edit config"),
         Binding("n", "show_new_clone", "New clone"),
         Binding("p", "show_projects", "Projects"),
         Binding("q", "quit", "Quit"),
@@ -104,6 +110,8 @@ class DraupnirApp(App[None]):
         shown_actions = _BASE_SHOWN_ACTIONS
         if ws.config.actions.fast_forward_main:
             shown_actions = shown_actions | {"ff-main"}
+        if in_cmux():
+            shown_actions = shown_actions | {"cmux-workspace"}
         self.projects = ProjectsView(
             main_folder=ws.main,
             main_branch=self.main_branch,
@@ -329,8 +337,10 @@ class DraupnirApp(App[None]):
         handlers: dict[str, Callable[[], None]] = {
             "refresh": self.action_refresh_status,
             "fetch-all": self.action_fetch_all,
+            "config": self.action_edit_config,
             "open-branch": self.action_open_branch,
             "open-ide": self.action_open_ide,
+            "cmux-workspace": self.action_open_cmux_workspace,
             "rebase": self.action_rebase,
             "push-follow": self.action_push_and_follow,
             "ff-main": self.action_ff_main,
@@ -356,14 +366,16 @@ class DraupnirApp(App[None]):
         if not event.branch:
             self.notify("Enter a branch name.", severity="warning")
             return
-        self._start_new_clone(event.branch, event.base, event.open_after)
+        self._start_new_clone(event.branch, event.base, event.folder, event.open_after)
 
-    def _start_new_clone(self, branch: str, base: str | None, open_after: bool) -> None:
+    def _start_new_clone(
+        self, branch: str, base: str | None, folder_name: str | None, open_after: bool
+    ) -> None:
         """Creates a clone for branch as an action, and starts the IDE in it when asked."""
         ws = self.ws
 
         def operation(log: LogFn, _cancel: threading.Event) -> None:
-            folder = new_clone(ws, branch, base, log)
+            folder = new_clone(ws, branch, base, log, folder_name)
             if not open_after:
                 return
             try:
@@ -375,6 +387,12 @@ class DraupnirApp(App[None]):
         self.start(f"Create a clone for {branch}", operation)
 
     # ----- Actions and key bindings -----------------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Hides the key of New cmux workspace, and turns it off, when its button is hidden."""
+        if action == "open_cmux_workspace":
+            return "cmux-workspace" in self.projects.shown_actions
+        return True
 
     def action_refresh_status(self) -> None:
         """Reads the status of every clone again, without a fetch."""
@@ -402,11 +420,17 @@ class DraupnirApp(App[None]):
             self.notify(str(exc).splitlines()[0], severity="error", timeout=10)
             return
         root = self.ws.root
-        without_clone = [b for b in branches if not (root / folder_for_branch(b)).exists()]
+        # A clone can have a folder name of its own, so the branches the clones are on count too.
+        checked_out = {status.branch for status in self.statuses}
+        without_clone = [
+            b
+            for b in branches
+            if b not in checked_out and not (root / folder_for_branch(b)).exists()
+        ]
 
         def chosen(choice: BranchChoice | None) -> None:
             if choice is not None:
-                self._start_new_clone(choice.branch, None, choice.open_after)
+                self._start_new_clone(choice.branch, None, choice.folder, choice.open_after)
 
         self.push_screen(BranchPickerScreen(without_clone), chosen)
 
@@ -432,6 +456,71 @@ class DraupnirApp(App[None]):
             log(f"Starting the IDE: {command}")
 
         self.start(f"Open the IDE in {name}", operation)
+
+    def action_open_cmux_workspace(self) -> None:
+        """Opens a new cmux workspace with a shell in the selected clone."""
+        selected = self.projects.selected_status()
+        if selected is None:
+            return
+        folder = selected.folder
+
+        def operation(log: LogFn, _cancel: threading.Event) -> None:
+            open_cmux_workspace(folder, log)
+
+        self.start(f"Open a cmux workspace in {selected.name}", operation)
+
+    def action_edit_config(self) -> None:
+        """Opens draupnir.toml in the editor, or shows it when no editor is set (R25).
+
+        The editor takes over the terminal while it runs, so this refuses while an action
+        runs. After the editor ends, the config is read again, and a config that cannot be
+        read is reported without changing the one the app uses.
+        """
+        path = self.ws.root / CONFIG_FILE_NAME
+        if self.busy:
+            self.notify(
+                f'The config can be edited when "{self.running_title}" ends.',
+                severity="information",
+            )
+            return
+        try:
+            command = editor_command()
+        except OperationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if command is None:
+            self._show_config(path)
+            return
+        with self.suspend():
+            subprocess.run([*command, str(path)], check=False)
+        self._read_config_again()
+
+    def _show_config(self, path: Path) -> None:
+        """Writes draupnir.toml into the output, for a terminal without an editor."""
+        self.output.write_line(f"{path}:")
+        try:
+            for line in path.read_text().splitlines():
+                self.output.write_line(f"  {line}")
+        except OSError as exc:
+            self.output.write_line(f"draupnir could not read {path}: {exc.strerror}", "red")
+            return
+        self.output.write_line(
+            "Set DRAUPNIR_EDITOR, VISUAL or EDITOR to edit this file from the dashboard.",
+            "yellow",
+        )
+
+    def _read_config_again(self) -> None:
+        """Reads draupnir.toml again after the editor ended, and says what a restart needs."""
+        try:
+            self.ws = Workspace.find(self.ws.root)
+        except OperationError as exc:
+            self.output.write_line(str(exc), "red")
+            self.notify(str(exc).splitlines()[0], severity="error")
+            return
+        self.notify(
+            f"{CONFIG_FILE_NAME} is read again. Restart draupnir when you changed which "
+            "buttons are shown, the default branch or the refresh time."
+        )
 
     def action_rebase(self) -> None:
         """Rebases the selected clone on the default branch (D8).

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands in for Maven. draupnir only reads the version line.
+echo "Apache Maven 3.9.9 (bats stub)"

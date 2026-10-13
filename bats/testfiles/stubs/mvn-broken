@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stands in for a Maven that is installed but cannot run.
+echo "mvn: this installation is broken" >&2
+exit 1

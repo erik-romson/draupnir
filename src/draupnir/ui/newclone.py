@@ -9,6 +9,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, Label
 
+from draupnir.setup import folder_for_branch
 from draupnir.workspace import Workspace
 
 
@@ -26,12 +27,18 @@ class NewCloneView(Widget):
     """
 
     class CreateRequested(Message):
-        """The user asked to create a clone for branch, from base, with open_after."""
+        """The user asked to create a clone for branch, from base, in folder, with open_after.
 
-        def __init__(self, branch: str, base: str | None, open_after: bool) -> None:
+        folder is None when the user left it empty, and the folder then gets the branch name.
+        """
+
+        def __init__(
+            self, branch: str, base: str | None, folder: str | None, open_after: bool
+        ) -> None:
             super().__init__()
             self.branch = branch
             self.base = base
+            self.folder = folder
             self.open_after = open_after
 
     def __init__(
@@ -51,6 +58,9 @@ class NewCloneView(Widget):
         base_placeholder = ws.config.workspace.base_branch or main_branch
         self.branch_input = Input(placeholder="feature/vessel-owner", id="branch")
         self.base_input = Input(placeholder=base_placeholder, id="base")
+        self.folder_input = Input(
+            placeholder=folder_for_branch("feature/vessel-owner"), id="folder"
+        )
         self.open_checkbox = Checkbox(
             "Open the IDE when the clone is ready", value=True, id="open-after"
         )
@@ -64,10 +74,12 @@ class NewCloneView(Widget):
             yield Label(f"Workspace: {self.ws.root}")
             yield Label(f"Repository: {self.ws.origin_url()}")
             yield Label("")
-            yield Label("Branch name. The folder gets the same name with / replaced by -.")
+            yield Label("Branch name.")
             yield self.branch_input
             yield Label(f"Base branch on GitHub. Empty means {self.base_input.placeholder}.")
             yield self.base_input
+            yield Label("Folder name. Empty means the branch name with / replaced by -.")
+            yield self.folder_input
             yield self.open_checkbox
             yield Button(
                 "Create clone",
@@ -80,9 +92,16 @@ class NewCloneView(Widget):
     def focus_branch_input(self) -> None:
         self.branch_input.focus()
 
+    @on(Input.Changed, "#branch")
+    def _branch_changed(self, event: Input.Changed) -> None:
+        """Shows the folder the branch gets, as the placeholder of the folder input."""
+        branch = event.value.strip() or "feature/vessel-owner"
+        self.folder_input.placeholder = folder_for_branch(branch)
+
     @on(Button.Pressed, "#create")
-    @on(Input.Submitted, "#branch, #base")
+    @on(Input.Submitted, "#branch, #base, #folder")
     def _create_pressed(self) -> None:
         branch = self.branch_input.value.strip()
         base = self.base_input.value.strip() or None
-        self.post_message(self.CreateRequested(branch, base, self.open_checkbox.value))
+        folder = self.folder_input.value.strip() or None
+        self.post_message(self.CreateRequested(branch, base, folder, self.open_checkbox.value))

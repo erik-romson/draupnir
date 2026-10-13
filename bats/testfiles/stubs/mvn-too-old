@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands in for a Maven that is too old to honour maven.repo.local.tail.
+echo "Apache Maven 3.8.8 (bats stub)"

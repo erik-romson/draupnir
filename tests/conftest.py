@@ -67,6 +67,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     for name in list(os.environ):
         if name.startswith("DRAUPNIR_"):
             monkeypatch.delenv(name, raising=False)
+    # The editor of the config comes from the environment, so no test may see the real one.
+    for name in ("EDITOR", "VISUAL"):
+        monkeypatch.delenv(name, raising=False)
+    # The tests may run in a cmux terminal, and must not open workspaces in it.
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")

@@ -15,14 +15,16 @@ repository = "git@github.example.com:acme/shop.git"
 main-branch = "develop"
 # The branch new clones start from. Default: main-branch.
 base-branch = "develop"
-# Files that are not in git but every clone needs. They are copied from main/ once, never
-# overwritten, and hidden from git in each clone. Never list secrets, because this file is
-# committed.
+# Files that are not in git but every clone needs. Each line is a pattern, written the way a
+# line in .gitignore is written. The files that match in main/ are copied into a new clone
+# once, never overwritten, and hidden from git there. Never list secrets, because this file
+# is committed.
 local-files = [
-  "src/main/resources/local.properties",
+  "**/local.properties",
   ".claude/settings.local.json",
   ".idea/runConfigurations",
   ".git/hooks/commit-msg",
+  ".git/info/exclude",
 ]
 
 [maven]
@@ -52,13 +54,34 @@ offer-remove-after-merge = true
 refresh-seconds = 10
 
 [ide]
-# Commands that start the IDE. Default: idea and pycharm from PATH, JetBrains Toolbox or
-# /Applications.
+# Commands that start the IDE. Default: idea, studio and pycharm from PATH, JetBrains
+# Toolbox or /Applications.
 java = "idea"
+android = "studio"
 python = "pycharm"
 ```
 
-`local-files` can also list what `git clone` leaves out, such as hooks in `.git/hooks/`.
+draupnir picks the IDE from the files in the clone. A Gradle project whose `build.gradle.kts`,
+`settings.gradle.kts` or `gradle/libs.versions.toml` names the Android Gradle plugin opens in
+Android Studio. Any other Maven or Gradle project opens in IntelliJ IDEA, and a Python project
+opens in PyCharm. To open an Android project in IntelliJ IDEA instead, set `android = "idea"`.
+
+`local-files` patterns work like the lines of a `.gitignore` file, because git itself matches
+them in `main/`. So `**/local.properties` matches the file in every folder, a folder name matches
+the files in it, and a line that starts with `!` takes a file back that an earlier line matched. A
+file that git tracks never matches, because every clone already has it. draupnir copies each
+matched file into the new clone and writes its path into that clone's `.git/info/exclude`, so git
+keeps ignoring it.
+
+`local-files` can also list what `git clone` leaves out, such as hooks in `.git/hooks/`. A pattern
+that starts with `.git/` is a path, not a pattern, because git does not list the files in the git
+folder. Such a file is copied, but it needs no exclude line.
+
+`.git/info/exclude` is the one path that is not copied. Every clone already has its own exclude
+file, and draupnir writes the local files it copied into it, so a copy would throw those lines
+away. When `local-files` lists it, draupnir adds the lines of `main/.git/info/exclude` to the
+clone's own exclude file instead. A line that is already there stays as it is, so the ignore rules
+written by hand in `main/` reach every clone, and running `prepare` again adds nothing twice.
 
 ## Environment variables
 
@@ -67,7 +90,9 @@ These hold values that differ per machine, so they are never committed.
 | Variable | Meaning |
 |---|---|
 | `DRAUPNIR_IDEA` | The command that starts IntelliJ IDEA. It wins over `ide.java`. |
+| `DRAUPNIR_STUDIO` | The command that starts Android Studio. It wins over `ide.android`. |
 | `DRAUPNIR_PYCHARM` | The command that starts PyCharm. It wins over `ide.python`. |
+| `DRAUPNIR_EDITOR` | The command that opens `draupnir.toml` from the dashboard. It wins over `VISUAL` and `EDITOR`. |
 | `DRAUPNIR_MAVEN_SHARED_REPO` | The shared Maven repository, when it is not `~/.m2/repository`. |
 
 ## Following a build

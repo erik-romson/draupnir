@@ -25,6 +25,7 @@ class Needs(Enum):
 
     NOTHING = "nothing"
     PROJECT = "a selected clone"
+    OTHER_CLONE = "a selected clone that is not main/"
     FEATURE_BRANCH = "a selected clone on a feature branch"
 
 
@@ -58,6 +59,13 @@ ACTION_BUTTONS: tuple[ActionButton, ...] = (
         "Reads the status of every clone again, without a fetch. Key: r.",
     ),
     ActionButton(
+        "config",
+        "Edit config",
+        Needs.NOTHING,
+        "Opens draupnir.toml in the editor from DRAUPNIR_EDITOR, VISUAL or EDITOR, and shows the "
+        "file in the output when no editor is set. Key: c.",
+    ),
+    ActionButton(
         "open-branch",
         "Open branch",
         Needs.NOTHING,
@@ -67,7 +75,14 @@ ACTION_BUTTONS: tuple[ActionButton, ...] = (
         "open-ide",
         "Open IDE",
         Needs.PROJECT,
-        "Starts IntelliJ IDEA or PyCharm in the selected clone. Key: o.",
+        "Starts IntelliJ IDEA, Android Studio or PyCharm in the selected clone. Key: o.",
+    ),
+    ActionButton(
+        "cmux-workspace",
+        "New cmux workspace",
+        Needs.PROJECT,
+        "Opens a new cmux workspace with a shell in the selected clone. Only shown when draupnir "
+        "runs in cmux. Key: w.",
     ),
     ActionButton(
         "rebase",
@@ -107,9 +122,9 @@ ACTION_BUTTONS: tuple[ActionButton, ...] = (
     ActionButton(
         "remove",
         "Remove clone",
-        Needs.FEATURE_BRANCH,
-        "Deletes the selected clone's folder, after checking for unsaved work. Needs a clone on "
-        "a feature branch.",
+        Needs.OTHER_CLONE,
+        "Deletes the selected clone's folder, after checking for unsaved work. Removes a clone "
+        "on any branch, and never main/.",
         "error",
     ),
 )
@@ -228,7 +243,7 @@ class ProjectsView(Widget):
 
     DEFAULT_CSS = """
     ProjectsView { height: 1fr; }
-    ProjectsView #project-buttons { grid-size: 5; grid-gutter: 0 1; height: auto; padding: 0 1; }
+    ProjectsView #project-buttons { grid-size: 6; grid-gutter: 0 1; height: auto; padding: 0 1; }
     ProjectsView #project-buttons Button { width: 100%; }
     ProjectsView #table { height: 1fr; }
     ProjectsView #details { height: auto; max-height: 10; padding: 0 1; color: $text-muted; }
@@ -334,8 +349,12 @@ class ProjectsView(Widget):
             return self._statuses[row]
         return None
 
+    def _is_other_clone(self, status: ProjectStatus) -> bool:
+        """True for every clone but main/, whatever branch it is on."""
+        return status.folder != self.main_folder
+
     def _is_feature_branch(self, status: ProjectStatus) -> bool:
-        return status.folder != self.main_folder and status.branch != self.main_branch
+        return self._is_other_clone(status) and status.branch != self.main_branch
 
     def _update_buttons(self) -> None:
         selected = self.selected_status()
@@ -344,6 +363,8 @@ class ProjectsView(Widget):
                 disabled = self._busy
             elif spec.needs is Needs.PROJECT:
                 disabled = self._busy or selected is None
+            elif spec.needs is Needs.OTHER_CLONE:
+                disabled = self._busy or selected is None or not self._is_other_clone(selected)
             else:
                 disabled = self._busy or selected is None or not self._is_feature_branch(selected)
             self.buttons[spec.name].disabled = disabled

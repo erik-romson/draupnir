@@ -28,6 +28,7 @@ def test_empty_config_gives_defaults(tmp_path: Path) -> None:
     assert config.actions.offer_remove_after_merge is True
     assert config.ui.refresh_seconds == 10
     assert config.ide.java is None
+    assert config.ide.android is None
     assert config.ide.python is None
 
 
@@ -59,6 +60,7 @@ refresh-seconds = 2
 
 [ide]
 java = "idea-custom"
+android = "studio-custom"
 python = "pycharm-custom"
 """,
     )
@@ -78,6 +80,7 @@ python = "pycharm-custom"
     assert config.actions.offer_remove_after_merge is False
     assert config.ui.refresh_seconds == 2
     assert config.ide.java == "idea-custom"
+    assert config.ide.android == "studio-custom"
     assert config.ide.python == "pycharm-custom"
 
 
@@ -156,15 +159,18 @@ shared-repository = "~/from-file"
 
 [ide]
 java = "idea-from-file"
+android = "studio-from-file"
 python = "pycharm-from-file"
 """,
     )
     monkeypatch.setenv("DRAUPNIR_MAVEN_SHARED_REPO", "~/from-env")
     monkeypatch.setenv("DRAUPNIR_IDEA", "idea-from-env")
+    monkeypatch.setenv("DRAUPNIR_STUDIO", "studio-from-env")
     monkeypatch.setenv("DRAUPNIR_PYCHARM", "pycharm-from-env")
 
     config = load_config(tmp_path)
 
     assert config.maven.shared_repository == Path("~/from-env").expanduser()
     assert config.ide.java == "idea-from-env"
+    assert config.ide.android == "studio-from-env"
     assert config.ide.python == "pycharm-from-env"

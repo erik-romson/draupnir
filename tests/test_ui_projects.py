@@ -347,8 +347,10 @@ async def test_feature_actions_are_disabled_for_main(env: Env) -> None:
         assert [str(buttons[spec.name].label) for spec in ACTION_BUTTONS] == [
             "Fetch all",
             "Refresh",
+            "Edit config",
             "Open branch",
             "Open IDE",
+            "New cmux workspace",
             "Rebase on main",
             "Push and follow build",
             "Fast-forward main",
@@ -356,7 +358,7 @@ async def test_feature_actions_are_disabled_for_main(env: Env) -> None:
             "Build status",
             "Remove clone",
         ]
-        feature_actions = ["ff-main", "pr-merge", "remove"]
+        feature_actions = ["ff-main", "pr-merge"]
         other_actions = ["open-ide", "rebase", "push-follow", "build-status"]
 
         for name in ("main", "second-main"):
@@ -365,10 +367,20 @@ async def test_feature_actions_are_disabled_for_main(env: Env) -> None:
             assert all(buttons[action].disabled for action in feature_actions), name
             assert not any(buttons[action].disabled for action in other_actions), name
 
+        # Remove clone asks only that the clone is not main/, because a clone on the default
+        # branch can be removed too (D47).
+        _select(app, "main")
+        await pilot.pause()
+        assert buttons["remove"].disabled
+        _select(app, "second-main")
+        await pilot.pause()
+        assert not buttons["remove"].disabled
+
         _select(app, "feature-actions")
         await pilot.pause()
         assert not any(buttons[action].disabled for action in feature_actions)
         assert not any(buttons[action].disabled for action in other_actions)
+        assert not buttons["remove"].disabled
 
         # A new read of the status keeps the selection, and so the buttons stay the same.
         await pilot.press("r")

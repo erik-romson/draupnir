@@ -281,15 +281,31 @@ def _is_ancestor(folder: Path, ancestor: str, descendant: str) -> bool:
     return result.code == 0
 
 
+def _is_on_github(folder: Path, sha: str) -> bool:
+    """True when a branch on origin contains sha, as the last fetch saw it."""
+    result = git(
+        folder, "for-each-ref", "--contains", sha, "--format=%(refname)", "refs/remotes/origin"
+    )
+    return bool(result.stdout.strip())
+
+
 def _require_green_build(folder: Path, sha: str, log: LogFn) -> None:
     """Stops fast-forward main unless the build of sha is green (D16).
 
-    require_gh runs first, so a missing or logged-out gh stops before anything is read. A
-    build state is only known when both the check runs and the commit statuses could be
-    read (D31): a read that failed, even partly, stops here too, before anything is pushed.
+    A commit that no branch on origin contains has no build, and GitHub does not know it, so
+    this stops before it asks GitHub. require_gh runs next, so a missing or logged-out gh stops
+    before anything is read. A build state is only known when both the check runs and the
+    commit statuses could be read (D31): a read that failed, even partly, stops here too,
+    before anything is pushed.
     """
-    require_gh(folder)
     short = sha[:10]
+    if not _is_on_github(folder, sha):
+        raise OperationError(
+            f"Commit {short}, the head of {folder.name}, is not pushed yet, so it has no build. "
+            "Push the branch and wait for a green build, for example with push and follow "
+            "build, then try again."
+        )
+    require_gh(folder)
     try:
         state = build_state(folder, sha)
     except OperationError as exc:

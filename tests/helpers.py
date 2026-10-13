@@ -50,6 +50,35 @@ def write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
+def write_stub_cmux(bin_dir: Path, groups: str = '{"groups": []}') -> Path:
+    """Writes a stub cmux into bin_dir, and returns the file that gets its calls.
+
+    Each call appends one line to the file, with the arguments separated by tabs. The stub
+    answers `workspace-group list` with groups, `workspace create` with the workspace
+    new-workspace and the terminal new-terminal, and `todo open` with the surface new-todo.
+    """
+    calls = bin_dir.parent / "cmux-calls.txt"
+    groups_file = bin_dir.parent / "cmux-groups.json"
+    groups_file.write_text(groups)
+    write_executable(
+        bin_dir / "cmux",
+        "#!/bin/sh\n"
+        f'printf \'%s\\t\' "$@" >> "{calls}"\n'
+        f'echo >> "{calls}"\n'
+        'case "$1" in\n'
+        f'  workspace-group) cat "{groups_file}" ;;\n'
+        '  workspace) echo \'{"workspace_id": "new-workspace", "surface_id": "new-terminal"}\' ;;\n'
+        '  todo) echo \'{"surface_id": "new-todo"}\' ;;\n'
+        "esac\n",
+    )
+    return calls
+
+
+def cmux_calls(calls: Path) -> list[list[str]]:
+    """The calls that the stub cmux from write_stub_cmux got, as lists of arguments."""
+    return [line.rstrip("\t").split("\t") for line in calls.read_text().splitlines()]
+
+
 def append_config(root: Path, text: str) -> None:
     """Appends text to root/draupnir.toml, for a test that needs a non-default config value."""
     path = root / "draupnir.toml"

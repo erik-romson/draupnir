@@ -14,7 +14,7 @@ src/draupnir/
   status.py       reads the git state of a clone without locks
   github.py       gh login check, build state, waiting for builds, pull requests
   operations.py   fetch, rebase, push, fast-forward main, the pull request flow
-  ide.py          finds and starts IntelliJ IDEA or PyCharm
+  ide.py          finds and starts IntelliJ IDEA, Android Studio or PyCharm
   ui/
     app.py        the Textual app: tabs, key bindings, running one action at a time
     projects.py   the Projects tab
@@ -52,6 +52,10 @@ The tool parses only stable output: `git status --porcelain=v2`, `git push --por
 
 ## Tests
 
+Two suites test draupnir. `AGENTS.md` says which suite a change needs.
+
+### Unit tests: `tests/`
+
 `tests/conftest.py` builds a workspace in `tmp_path`:
 
 - a bare repository, `project.git`, stands in for GitHub;
@@ -65,5 +69,46 @@ The tool parses only stable output: `git status --porcelain=v2`, `git push --por
 CLI tests call `cli.main(argv)` and read `capsys`. UI tests use Textual's pilot and wait on
 `app.workers.wait_for_complete()` and `pilot.pause()`, never on fixed sleeps.
 
-CI runs the quality gate on Ubuntu and macOS, then builds the wheel, installs it, and runs
-`draupnir --version`.
+### Integration tests: `bats/`
+
+The integration tests run the installed `draupnir` command, with real git, and then read what is
+on disk. They cover what a user can see: the files in a clone, the exclude file, the branches on
+GitHub, and the exit code. They do not import draupnir, so they also catch what breaks between
+the command line and the modules.
+
+```
+bats/
+  helpers/workspace.bash   builds the sandbox, runs draupnir, and holds the assertions
+  helpers/gh_state.py      drives tests/fake_gh.py from the shell
+  testfiles/               the project, the stub commands, and the files a test needs
+  cli.bats                 the version, the help, and a wrong call
+  init.bats                draupnir init (R1, R2, R3)
+  clone.bats               draupnir new (R4, R5)
+  local-files.bats         the local files of a clone (R6)
+  maven.bats               the private Maven repository (R8 to R11)
+  status.bats              draupnir status, and reading a clone without locks (R15, R16, R23)
+  git-ops.bats             fetch, rebase and push (R17)
+  build.bats               following builds through gh (R20, R21)
+  ff-main.bats             fast-forward main (R17, R18)
+  pr.bats                  the pull request flow (R17)
+  remove.bats              draupnir remove (R7)
+  ide.bats                 starting the IDE (R13)
+```
+
+`setup_workspace` in the helper builds one sandbox per test under `tmp/batstest/`: the bare
+repository `project.git`, stubs for `mvn`, `idea` and `gh` on `PATH`, its own `HOME` and git
+config, and a workspace that `draupnir init` has set up. The sandbox stays behind after a
+failure, so the workspace of a failed test can be looked at.
+
+The `gh` stub runs `tests/fake_gh.py`, so both suites use the same stand-in for GitHub. Because
+the sandbox lies inside the draupnir repository, the helper sets `GIT_CEILING_DIRECTORIES`, so
+git does not find that repository when it searches upwards from a folder that is not a clone yet.
+
+The suite needs `bats`, the `bats-support`, `bats-assert` and `bats-file` libraries, and
+`uv sync`, because it runs `.venv/bin/draupnir`. The whole suite takes a few minutes, because
+every test clones the project twice.
+
+### CI
+
+CI runs the quality gate on Ubuntu and macOS, then the integration tests, then builds the wheel,
+installs it, and runs `draupnir --version`.

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands in for IntelliJ IDEA. Each call appends its arguments to the log file.
+printf '%s\n' "$@" >> "$BATS_IDEA_LOG"

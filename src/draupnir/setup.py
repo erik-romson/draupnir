@@ -53,27 +53,57 @@ def _exclude_path(folder: Path) -> Path:
 @dataclass(frozen=True)
 class _LocalFile:
     path: str
-    tracked: bool
+    in_git_folder: bool
     exists_in_folder: bool
-    exists_in_main: bool
 
 
-def _plan_local_files(ws: Workspace, folder: Path) -> list[_LocalFile]:
-    """Reads, for every configured local file, whether it is tracked, and where it exists.
+def _matching_files(main: Path, patterns: list[str]) -> list[str]:
+    """The files in main/ that patterns match, the way git reads the lines of a .gitignore.
 
-    This only reads. Nothing is copied here.
+    git itself does the matching, so every rule works, including '**' and a '!' line that
+    takes a file back. The patterns are read in the order the config lists them. A file that
+    git tracks never matches, because every clone already has it.
     """
-    plans: list[_LocalFile] = []
-    for path in ws.config.workspace.local_files:
-        plans.append(
-            _LocalFile(
-                path=path,
-                tracked=_is_tracked(ws.main, path),
-                exists_in_folder=(folder / path).exists(),
-                exists_in_main=(ws.main / path).exists(),
-            )
+    if not patterns:
+        return []
+    options = [f"--exclude={pattern}" for pattern in patterns]
+    found = git(main, "ls-files", "-z", "--others", "--ignored", *options)
+    return [path for path in found.stdout.split("\0") if path]
+
+
+def _plan_local_files(ws: Workspace, folder: Path) -> tuple[list[_LocalFile], list[str]]:
+    """Finds the files that the configured patterns match in main/, and where they exist.
+
+    Returns the files to copy, and the patterns that no file in main/ matches. A pattern that
+    starts with .git/ is a path, because git does not list the files in the git folder. This
+    only reads. Nothing is copied here.
+    """
+    git_folder_paths: list[str] = []
+    patterns: list[str] = []
+    unmatched: list[str] = []
+    for entry in ws.config.workspace.local_files:
+        if not entry.startswith(".git/"):
+            patterns.append(entry)
+        elif (ws.main / entry).exists():
+            git_folder_paths.append(entry)
+        else:
+            unmatched.append(entry)
+
+    paths = git_folder_paths + _matching_files(ws.main, patterns)
+    unmatched += [
+        pattern
+        for pattern in patterns
+        if not pattern.startswith("!") and not _matching_files(ws.main, [pattern])
+    ]
+    plans = [
+        _LocalFile(
+            path=path,
+            in_git_folder=path.startswith(".git/"),
+            exists_in_folder=(folder / path).exists(),
         )
-    return plans
+        for path in dict.fromkeys(paths)
+    ]
+    return plans, unmatched
 
 
 def _maven_enabled(ws: Workspace) -> bool:
@@ -97,38 +127,66 @@ def _check_maven_config_not_tracked(folder: Path) -> None:
         )
 
 
+_EXCLUDE_FILE = ".git/info/exclude"
+
+
+def _lines_of_exclude_in_main(main: Path, is_main: bool, log: LogFn) -> list[str]:
+    """The ignore lines of main/.git/info/exclude, to add to the exclude file of the clone.
+
+    This file is never copied, because git clone writes one in every new clone, and a copy
+    would throw away the lines that draupnir and the user put there. Its lines are added
+    instead, and a line that is already there is left alone.
+    """
+    if is_main:
+        return []
+    text = (main / _EXCLUDE_FILE).read_text()
+    log(f"Added the ignore lines of main/{_EXCLUDE_FILE}.")
+    return [line for line in text.splitlines() if line.strip()]
+
+
 def _apply_local_file(
     main: Path, folder: Path, is_main: bool, plan: _LocalFile, log: LogFn
 ) -> list[str]:
     """Copies plan into folder when needed, and returns the exclude lines it needs.
 
-    A file that git tracks needs no exclude line, because every clone already has it. A
-    path under .git/ is never excluded either, because .gitignore-style files do not apply
-    there. main/ itself is only ever excluded, never copied into, because it is the
-    source the other clones copy from.
+    A path under .git/ is never excluded, because .gitignore-style files do not apply there.
+    The exclude file itself is the one path whose lines are added instead of being copied.
+    main/ itself is only ever excluded, never copied into, because it is the source the other
+    clones copy from.
     """
-    if plan.tracked:
-        log(f"Skipped {plan.path}: git tracks it in main/, so every clone already has it.")
-        return []
+    if plan.path == _EXCLUDE_FILE:
+        return _lines_of_exclude_in_main(main, is_main, log)
 
-    lines = [] if plan.path.startswith(".git/") else [f"/{plan.path}"]
+    lines = [] if plan.in_git_folder else [f"/{plan.path}"]
     if is_main:
         return lines
 
     target = folder / plan.path
     if plan.exists_in_folder:
         log(f"Kept {plan.path}: it already exists in this folder.")
-    elif plan.exists_in_main:
-        source = main / plan.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_dir():
-            shutil.copytree(source, target)
-        else:
-            shutil.copy2(source, target)
-        log(f"Copied {plan.path} from main/.")
+        return lines
+    source = main / plan.path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, target)
     else:
-        log(f"Skipped {plan.path}: it does not exist in main/.")
+        shutil.copy2(source, target)
+    log(f"Copied {plan.path} from main/.")
     return lines
+
+
+def _log_unmatched(main: Path, patterns: list[str], log: LogFn) -> None:
+    """Says, for every pattern that matched no file in main/, why it matched nothing."""
+    for pattern in patterns:
+        if _is_tracked(main, pattern):
+            log(f"Skipped {pattern}: git tracks it in main/, so every clone already has it.")
+        else:
+            log(f"Skipped {pattern}: no file in main/ matches it.")
+
+
+def exclude_from_git(folder: Path, *lines: str) -> None:
+    """Hides the paths in lines from git in folder, through its own .git/info/exclude."""
+    _add_exclude_lines(_exclude_path(folder), list(lines))
 
 
 def _add_exclude_lines(exclude_path: Path, lines: list[str]) -> None:
@@ -156,7 +214,7 @@ def prepare(ws: Workspace, folder: Path, log: LogFn) -> None:
     """
     folder = _require_clone_top(ws, folder)
     exclude_path = _exclude_path(folder)
-    plans = _plan_local_files(ws, folder)
+    plans, unmatched = _plan_local_files(ws, folder)
     maven_on = _maven_enabled(ws)
     if maven_on:
         maven.version(folder)
@@ -164,6 +222,7 @@ def prepare(ws: Workspace, folder: Path, log: LogFn) -> None:
 
     is_main = folder == ws.main
     exclude_lines: list[str] = []
+    _log_unmatched(ws.main, unmatched, log)
     for plan in plans:
         exclude_lines.extend(_apply_local_file(ws.main, folder, is_main, plan, log))
 
@@ -208,10 +267,11 @@ def _toml_template(url: str | None) -> str:
 # Branch that new clones start from. Default: main-branch.
 # base-branch = "main"
 
-# Files that are not in git, but that every clone needs. Copied from main/ once,
+# Files that are not in git, but that every clone needs. Each line is a pattern, written
+# the way a line in .gitignore is written. The files that match in main/ are copied once,
 # never overwritten, and hidden from git in each clone. Never list secrets here.
 # local-files = [
-#   "src/main/resources/local.properties",
+#   "**/local.properties",
 #   ".claude/settings.local.json",
 #   ".idea/runConfigurations",
 #   ".git/hooks/commit-msg",
@@ -243,9 +303,11 @@ def _toml_template(url: str | None) -> str:
 # refresh-seconds = 10
 
 [ide]
-# Commands that start the IDE. Default: idea and pycharm from PATH, JetBrains Toolbox
-# or /Applications. Machine override: DRAUPNIR_IDEA and DRAUPNIR_PYCHARM.
+# Commands that start the IDE. A Gradle project that uses the Android Gradle plugin opens
+# in Android Studio. Default: idea, studio and pycharm from PATH, JetBrains Toolbox or
+# /Applications. Machine override: DRAUPNIR_IDEA, DRAUPNIR_STUDIO and DRAUPNIR_PYCHARM.
 # java = "idea"
+# android = "studio"
 # python = "pycharm"
 """
 
@@ -479,18 +541,33 @@ def _clone_and_check_out(
         git(folder, "branch", "-D", original_branch, check=False)
 
 
-def new_clone(ws: Workspace, branch: str, base: str | None, log: LogFn) -> Path:
+def _validate_folder_name(name: str) -> None:
+    if "/" in name or "\\" in name or name in ("", ".", "..", MAIN_FOLDER_NAME):
+        raise OperationError(
+            f"'{name}' cannot be the folder of a clone. Give a plain folder name without '/', "
+            f"other than {MAIN_FOLDER_NAME}, '.' and '..'."
+        )
+
+
+def new_clone(
+    ws: Workspace, branch: str, base: str | None, log: LogFn, folder_name: str | None = None
+) -> Path:
     """Creates a clone of branch next to main/, made from main/ on disk.
 
     The clone is then pointed at the GitHub URL of main/ and fetched, so it does not
     depend on main/ afterwards (R5). branch is checked out with tracking when it already
     exists on GitHub. Otherwise it is created from origin/<base>, without tracking.
+    The folder is called folder_name. Without it, the folder gets the name of the branch.
     """
     _validate_branch_name(ws.root, branch)
-    folder = ws.root / folder_for_branch(branch)
+    if folder_name is None:
+        folder_name = folder_for_branch(branch)
+    else:
+        _validate_folder_name(folder_name)
+    folder = ws.root / folder_name
     if folder.exists():
         raise OperationError(
-            f"{folder} already exists. Remove it first, or choose a different branch name."
+            f"{folder} already exists. Remove it first, or choose a different folder name."
         )
 
     base_branch = base or ws.config.workspace.base_branch or ws.main_branch()

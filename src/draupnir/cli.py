@@ -85,7 +85,7 @@ def run_init(args: argparse.Namespace) -> int:
 def run_new(args: argparse.Namespace) -> int:
     require_git()
     ws = Workspace.find(Path.cwd())
-    folder = new_clone(ws, args.branch, args.base, _log)
+    folder = new_clone(ws, args.branch, args.base, _log, args.folder)
     _log(f"{folder} is ready.")
     if args.open:
         command = open_ide(folder, ws.config)
@@ -326,6 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
     new_parser = add_command("new", help="Create a clone next to main/.")
     new_parser.add_argument("branch", help="branch name for the new clone")
     new_parser.add_argument("--base", metavar="branch", help="branch the new branch starts from")
+    new_parser.add_argument(
+        "--folder",
+        metavar="name",
+        help="folder name for the new clone. Default: the branch name with / replaced by -",
+    )
     new_parser.add_argument("--open", action="store_true", help="start the IDE in the new clone")
     new_parser.set_defaults(func=run_new)
 

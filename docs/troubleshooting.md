@@ -22,6 +22,16 @@ and names the operation. Finish or abort it in the clone, for example with `git 
 
 **`main/` does not know the default branch.** Run `git -C main remote set-head origin --auto`.
 
+**Two dashboards watch the same workspace after cmux relaunches.** Two cmux tabs carry the same
+saved command. Run `cmux surface resume show` in each of them to see the folder, and
+`cmux surface resume clear` in the one you do not want. See
+[Restart the dashboards after cmux relaunches](../README.md#restart-the-dashboards-after-cmux-relaunches).
+
+**A restarted dashboard quits at once.** The folder that cmux saved is not a draupnir workspace, so
+the dashboard says that it found no workspace. Run `cmux surface resume show` in the tab to see the
+folder. Run `draupnir init` in that folder, or save the command again with
+`cmux surface resume set --cwd [path to workspace]`.
+
 **A clone cannot be removed after a squash merge.** Squashed commits get new content, so draupnir
 cannot see that they are merged. Use `draupnir remove --force`.
 

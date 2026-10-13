@@ -88,6 +88,54 @@ def test_prepare_copies_a_folder_with_its_files(env: Env) -> None:
     assert (feature / "runConfigurations" / "sub" / "nested.xml").read_text() == "<nested/>\n"
 
 
+def test_prepare_copies_the_files_that_a_gitignore_pattern_matches(env: Env) -> None:
+    (env.main / ".gitignore").write_text("*.local.json\n")
+    sh(env.main, "git", "add", ".gitignore")
+    sh(env.main, "git", "commit", "-qm", "ignore local json")
+    claude = env.main / ".claude"
+    claude.mkdir()
+    (claude / "settings.local.json").write_text("{}\n")
+    nested = env.main / "src" / "main" / "resources"
+    nested.mkdir(parents=True)
+    (nested / "local.properties").write_text("value\n")
+    (env.main / "other.properties").write_text("not wanted\n")
+    _configure_local_files(env.root, ["**/*.local.json", "**/local.properties"])
+    feature = _clone(env, "feature-patterns")
+
+    _, log = logger()
+    prepare(env.ws(), feature, log)
+
+    assert (feature / ".claude" / "settings.local.json").read_text() == "{}\n"
+    assert (feature / "src" / "main" / "resources" / "local.properties").read_text() == "value\n"
+    assert not (feature / "other.properties").exists()
+    exclude = _exclude_lines(feature)
+    assert "/.claude/settings.local.json" in exclude
+    assert "/src/main/resources/local.properties" in exclude
+
+
+def test_prepare_takes_a_file_back_with_a_negation_pattern(env: Env) -> None:
+    (env.main / "keep.properties").write_text("keep\n")
+    (env.main / "skip.properties").write_text("skip\n")
+    _configure_local_files(env.root, ["*.properties", "!skip.properties"])
+    feature = _clone(env, "feature-negated")
+
+    _, log = logger()
+    prepare(env.ws(), feature, log)
+
+    assert (feature / "keep.properties").read_text() == "keep\n"
+    assert not (feature / "skip.properties").exists()
+
+
+def test_prepare_says_when_a_pattern_matches_nothing(env: Env) -> None:
+    _configure_local_files(env.root, ["*.nothing"])
+    feature = _clone(env, "feature-no-match")
+
+    lines, log = logger()
+    prepare(env.ws(), feature, log)
+
+    assert any("*.nothing" in line and "no file in main/ matches it" in line for line in lines)
+
+
 def test_prepare_skips_files_that_git_tracks(env: Env) -> None:
     _configure_local_files(env.root, ["pom.xml"])
     feature = _clone(env, "feature-c")
@@ -138,6 +186,52 @@ def test_prepare_copies_a_git_hook_without_excluding_it(env: Env) -> None:
     assert copied.is_file()
     assert copied.stat().st_mode & stat.S_IEXEC
     assert not any(".git/hooks/commit-msg" in line for line in _exclude_lines(feature))
+
+
+def test_prepare_adds_the_exclude_lines_of_main_to_a_clone(env: Env) -> None:
+    main_exclude = env.main / ".git" / "info" / "exclude"
+    main_exclude.write_text("# notes of my own\n/scratch/\n")
+    _configure_local_files(env.root, [".git/info/exclude"])
+    feature = _clone(env, "feature-x")
+    (feature / ".git" / "info" / "exclude").write_text("/only-here\n")
+
+    lines, log = logger()
+    prepare(env.ws(), feature, log)
+
+    exclude = _exclude_lines(feature)
+    assert "/scratch/" in exclude
+    assert "# notes of my own" in exclude
+    assert "/only-here" in exclude
+    assert any("Added the ignore lines of main/.git/info/exclude." in line for line in lines)
+    assert not any("Copied" in line for line in lines)
+
+
+def test_prepare_adds_the_exclude_lines_of_main_only_once(env: Env) -> None:
+    main_exclude = env.main / ".git" / "info" / "exclude"
+    main_exclude.write_text("/scratch/\n")
+    _configure_local_files(env.root, [".git/info/exclude"])
+    feature = _clone(env, "feature-y")
+
+    _1, log1 = logger()
+    prepare(env.ws(), feature, log1)
+    after_first = _exclude_lines(feature)
+    _2, log2 = logger()
+    prepare(env.ws(), feature, log2)
+
+    assert _exclude_lines(feature) == after_first
+    assert after_first.count("/scratch/") == 1
+
+
+def test_prepare_keeps_the_exclude_file_of_main_itself(env: Env) -> None:
+    main_exclude = env.main / ".git" / "info" / "exclude"
+    main_exclude.write_text("/scratch/\n")
+    _configure_local_files(env.root, [".git/info/exclude"])
+
+    lines, log = logger()
+    prepare(env.ws(), env.main, log)
+
+    assert _exclude_lines(env.main).count("/scratch/") == 1
+    assert not any("Added the ignore lines" in line for line in lines)
 
 
 def test_prepare_can_run_twice_without_changes(env: Env) -> None:
@@ -565,6 +659,37 @@ def test_new_clone_folder_name_replaces_slashes(env: Env) -> None:
 
     assert folder == env.root / "feature-vessel-owner"
     assert folder.is_dir()
+
+
+def test_new_clone_uses_the_folder_name_it_is_given(env: Env) -> None:
+    _, log = logger()
+
+    folder = new_clone(env.ws(), "feature/vessel-owner", None, log, "owner")
+
+    assert folder == env.root / "owner"
+    assert sh(folder, "git", "branch", "--show-current") == "feature/vessel-owner"
+    assert not (env.root / "feature-vessel-owner").exists()
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "main", "a/b"])
+def test_new_clone_refuses_a_folder_name_that_is_not_a_plain_name(env: Env, name: str) -> None:
+    _, log = logger()
+
+    with pytest.raises(OperationError) as exc_info:
+        new_clone(env.ws(), "feature/odd-folder", None, log, name)
+
+    assert "plain folder name" in str(exc_info.value)
+    assert not (env.root / "feature-odd-folder").exists()
+
+
+def test_new_clone_refuses_a_folder_name_that_exists(env: Env) -> None:
+    (env.root / "taken").mkdir()
+    _, log = logger()
+
+    with pytest.raises(OperationError) as exc_info:
+        new_clone(env.ws(), "feature/free", None, log, "taken")
+
+    assert "taken already exists" in str(exc_info.value)
 
 
 def test_new_clone_keeps_the_folder_and_explains_when_prepare_fails(env: Env) -> None:

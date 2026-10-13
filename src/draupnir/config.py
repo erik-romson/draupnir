@@ -53,6 +53,7 @@ class UiConfig:
 @dataclass(frozen=True)
 class IdeConfig:
     java: str | None = None
+    android: str | None = None
     python: str | None = None
 
 
@@ -149,11 +150,16 @@ def _string_list(section: str, key: str, data: dict[str, Any]) -> list[str]:
 
 
 def _check_local_file(entry: str) -> None:
-    path = PurePosixPath(entry)
-    if path.is_absolute() or ".." in path.parts:
+    """Checks one workspace.local-files pattern.
+
+    A pattern works like a line in .gitignore, so it may start with '!' to take a file back,
+    and with '/' to match from the project root. It always stays inside the project.
+    """
+    pattern = entry.removeprefix("!").removeprefix("/")
+    if not pattern or ".." in PurePosixPath(pattern).parts:
         raise OperationError(
-            f"{CONFIG_FILE_NAME} lists '{entry}' in workspace.local-files, but the path must "
-            "be relative to the project root and must not contain '..'."
+            f"{CONFIG_FILE_NAME} lists '{entry}' in workspace.local-files, but the pattern must "
+            "match files inside the project and must not contain '..'."
         )
 
 
@@ -216,9 +222,10 @@ def _load_ui(data: dict[str, Any]) -> UiConfig:
 
 
 def _load_ide(data: dict[str, Any]) -> IdeConfig:
-    _check_keys("ide", data, ["java", "python"])
+    _check_keys("ide", data, ["java", "android", "python"])
     return IdeConfig(
         java=_optional_str("ide", "java", data),
+        android=_optional_str("ide", "android", data),
         python=_optional_str("ide", "python", data),
     )
 
@@ -256,9 +263,12 @@ def _apply_environment(config: Config) -> Config:
 
     ide = config.ide
     idea = os.environ.get("DRAUPNIR_IDEA")
+    studio = os.environ.get("DRAUPNIR_STUDIO")
     pycharm = os.environ.get("DRAUPNIR_PYCHARM")
     if idea:
         ide = replace(ide, java=idea)
+    if studio:
+        ide = replace(ide, android=studio)
     if pycharm:
         ide = replace(ide, python=pycharm)
 

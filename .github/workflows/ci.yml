@@ -36,6 +36,20 @@ jobs:
       - name: Test
         run: uv run pytest
 
+      - name: Install bats and its libraries
+        run: |
+          sudo mkdir -p /usr/local/lib/bats
+          for library in bats-support bats-assert bats-file; do
+            sudo git clone --depth 1 --quiet \
+              "https://github.com/bats-core/$library.git" "/usr/local/lib/bats/$library"
+          done
+          git clone --depth 1 --quiet \
+            https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats-core"
+          sudo "$RUNNER_TEMP/bats-core/install.sh" /usr/local
+
+      - name: Integration test
+        run: bats bats/
+
       - name: Build the wheel
         run: uv build
 

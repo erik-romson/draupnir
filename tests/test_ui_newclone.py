@@ -58,6 +58,26 @@ async def test_new_clone_tab_creates_a_clone_and_the_table_shows_it(env: Env) ->
         assert (env.root / "feature-from-ui").is_dir()
 
 
+async def test_new_clone_tab_creates_the_clone_in_the_folder_it_is_given(env: Env) -> None:
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        await pilot.press("n")
+        await pilot.pause()
+        app.newclone.branch_input.value = "feature/from-ui"
+        await pilot.pause()
+        assert app.newclone.folder_input.placeholder == "feature-from-ui"
+
+        app.newclone.folder_input.value = "short"
+        await pilot.click("#create")
+        await settle(app, pilot)
+
+        assert "short" in _row_names(app)
+        assert (env.root / "short").is_dir()
+        assert not (env.root / "feature-from-ui").exists()
+
+
 async def test_branch_argument_fills_in_the_form_and_opens_the_tab(env: Env) -> None:
     app = DraupnirApp(env.ws(), initial_branch="feature/typed-in")
     async with app.run_test(size=SIZE) as pilot:

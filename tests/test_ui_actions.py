@@ -1,12 +1,27 @@
 """Tests for the dashboard actions built in Steps 9 to 12: Open IDE, Remove clone, Rebase, Push
-and follow build, Stop waiting, and Fast-forward main (R7, R13, R17, R18, R19, R21)."""
+and follow build, Stop waiting, Fast-forward main and Edit config (R7, R13, R17, R18, R19, R21,
+R25)."""
 
 from __future__ import annotations
 
+import contextlib
+
+import pytest
 from conftest import Env
 from fake_gh import CheckRun, Poll, running
-from helpers import append_config, commit, logger, settle, sh, wait_until
+from helpers import (
+    append_config,
+    cmux_calls,
+    commit,
+    logger,
+    settle,
+    sh,
+    wait_until,
+    write_executable,
+    write_stub_cmux,
+)
 
+from draupnir.operations import push
 from draupnir.setup import new_clone, unsaved_work
 from draupnir.ui.app import DraupnirApp
 from draupnir.ui.confirm import ConfirmScreen
@@ -49,6 +64,34 @@ async def test_ui_remove_asks_for_confirmation_and_deletes_the_clone(env: Env) -
         assert not folder.exists()
         assert "feature-remove-me" not in _row_names(app)
         assert "=== Done: Remove feature-remove-me" in _output_lines(app)
+
+
+async def test_ui_remove_deletes_a_clone_on_the_default_branch(env: Env) -> None:
+    """A clone that is on the default branch is removable too, only main/ is not (D47)."""
+    sh(env.root, "git", "clone", "-q", str(env.remote), "merged-work")
+    folder = env.root / "merged-work"
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        _select(app, "merged-work")
+        await pilot.pause()
+        assert not app.projects.buttons["remove"].disabled
+
+        await pilot.click("#remove")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+
+        await pilot.press("y")
+        await settle(app, pilot)
+
+        assert not folder.exists()
+        assert "merged-work" not in _row_names(app)
+
+        # main/ itself stays out of reach.
+        _select(app, "main")
+        await pilot.pause()
+        assert app.projects.buttons["remove"].disabled
 
 
 async def test_ui_remove_answered_no_keeps_the_clone(env: Env) -> None:
@@ -260,6 +303,7 @@ async def test_ui_ff_main_asks_for_confirmation(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/ff-ui", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
 
     app = DraupnirApp(env.ws())
@@ -280,6 +324,70 @@ async def test_ui_ff_main_asks_for_confirmation(env: Env) -> None:
 
         assert sh(env.remote, "git", "rev-parse", "main") == sha
         assert "=== Done: Fast-forward main to feature-ff-ui" in _output_lines(app)
+
+
+def _use_stub_editor(env: Env, monkeypatch: pytest.MonkeyPatch, script: str) -> None:
+    """Makes the Edit config button run script instead of a real editor.
+
+    The dashboard cannot be suspended in a test, so suspend does nothing here. The editor
+    itself is a real command that draupnir starts, and it gets the path of the file.
+    """
+    editor = env.root / "stub-editor"
+    write_executable(editor, script)
+    monkeypatch.setenv("DRAUPNIR_EDITOR", str(editor))
+
+    def no_suspend(_app: DraupnirApp) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(DraupnirApp, "suspend", no_suspend)
+
+
+async def test_ui_edit_config_shows_the_file_when_no_editor_is_set(env: Env) -> None:
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        await pilot.click("#config")
+        await settle(app, pilot)
+
+        # The output wraps a long path, so only the end of the first line is checked.
+        lines = _output_lines(app)
+        assert any("draupnir.toml:" in line for line in lines)
+        assert any("[workspace]" in line for line in lines)
+        assert any("DRAUPNIR_EDITOR" in line for line in lines)
+
+
+async def test_ui_edit_config_starts_the_editor_and_reads_the_config_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_stub_editor(
+        env, monkeypatch, '#!/bin/sh\nprintf \'\\n[ide]\\njava = "my-idea"\\n\' >> "$1"\n'
+    )
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert app.ws.config.ide.java is None
+
+        await pilot.click("#config")
+        await settle(app, pilot)
+
+        assert app.ws.config.ide.java == "my-idea"
+
+
+async def test_ui_edit_config_reports_a_file_that_cannot_be_read(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_stub_editor(env, monkeypatch, "#!/bin/sh\nprintf 'not toml at all\\n' > \"$1\"\n")
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        before = app.ws.config
+
+        await pilot.click("#config")
+        await settle(app, pilot)
+
+        assert app.ws.config is before
+        assert any("draupnir.toml" in line for line in _output_lines(app))
 
 
 def _confirm_question(app: DraupnirApp) -> str:
@@ -367,3 +475,33 @@ async def test_ui_pr_flow_does_not_offer_removal_after_auto_merge(env: Env) -> N
         text = " ".join(lines)
         assert f"Auto-merge is on. GitHub merges pull request #{pr.number} after the" in text
         assert not any(line.startswith("=== Done: Remove") for line in lines)
+
+
+async def test_ui_cmux_workspace_is_hidden_outside_cmux(env: Env) -> None:
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        assert not app.projects.buttons["cmux-workspace"].display
+        assert app.check_action("open_cmux_workspace", ()) is False
+
+
+async def test_ui_cmux_workspace_opens_the_selected_clone(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    feature = new_clone(env.ws(), "feature-cmux", None, logger()[1])
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert app.projects.buttons["cmux-workspace"].display
+        _select(app, "feature-cmux")
+        await pilot.pause()
+
+        await pilot.press("w")
+        await settle(app, pilot)
+
+        create = next(call for call in cmux_calls(calls) if call[:2] == ["workspace", "create"])
+        assert create[create.index("--cwd") + 1] == str(feature)

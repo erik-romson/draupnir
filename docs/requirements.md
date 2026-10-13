@@ -32,9 +32,10 @@ in the [user guide](guide.md#concepts).
 
 ### Clones
 
-- **R4.** Creating a clone takes a branch name and an optional base branch. If the branch exists
-  on GitHub, the clone checks it out and tracks it. Otherwise a new branch is created from the
-  latest `origin/<base>`.
+- **R4.** Creating a clone takes a branch name, an optional base branch and an optional folder
+  name. If the branch exists on GitHub, the clone checks it out and tracks it. Otherwise a new
+  branch is created from the latest `origin/<base>`. Without a folder name, the folder is the
+  branch name with `/` replaced by `-`.
 - **R5.** The clone is made from `main/` on disk, for speed, and then pointed at the GitHub URL
   of `main/` and fetched. After that it does not depend on `main/`.
 - **R6.** The files named in `draupnir.toml` are copied from `main/` into the clone. Existing
@@ -57,10 +58,10 @@ in the [user guide](guide.md#concepts).
 
 ### Dashboard: new clone
 
-- **R12.** A tab with inputs for the branch name and the base branch, and a button that creates
-  the clone as in R4 to R6 and R8.
+- **R12.** A tab with inputs for the branch name, the base branch and the folder name, and a
+  button that creates the clone as in R4 to R6 and R8.
 - **R13.** After creating the clone, the dashboard can start the IDE in the new folder: IntelliJ
-  IDEA for Java projects, PyCharm for Python projects.
+  IDEA for Java projects, Android Studio for Android projects, PyCharm for Python projects.
 - **R14.** The branch name can also be passed on the command line, to fill in the input.
 
 ### Dashboard: projects
@@ -75,15 +76,19 @@ in the [user guide](guide.md#concepts).
   |---|---|
   | Fetch all / Refresh | Fetch every clone, or only read the state again |
   | Open IDE | Start the IDE in the clone |
+  | New cmux workspace | Open a cmux workspace with a shell in the clone. Only shown in cmux |
   | Rebase on main | Refuse when tracked files are changed. Fetch, then rebase on `origin/<default>`. On a conflict, stop, leave the rebase in progress, list the files, and offer to open the IDE |
   | Push and follow build | Push the branch. Feature branches use `--force-with-lease --force-if-includes`. The default branch is never force-pushed. Then follow the build of the pushed commit |
   | Fast-forward main | Only when the branch is on top of `origin/<default>`. Push `HEAD` to the default branch without force. Then update `main/` |
   | Pull request and merge | Push, create a pull request or reuse the open one, follow the build, merge with rebase only when the build succeeds, then update `main/` |
   | Build status | Ask GitHub once for the build result of the current commit |
+  | Edit config | Open `draupnir.toml` in the editor, as in R25 |
   | Remove clone | As R7 |
 
 - **R18.** Actions that change the default branch or delete a folder ask for confirmation first.
-  Actions that need a feature branch are disabled for `main/`.
+  Fast-forward main and Pull request and merge need a feature branch, so they are disabled for
+  `main/` and for every clone that is on the default branch. Remove clone is disabled for `main/`
+  only, because a clone on the default branch can be removed as well.
 - **R19.** An output area shows every command and its output while it runs. Only one action runs
   at a time. Waiting for a build can be stopped without stopping the build itself.
 
@@ -103,6 +108,9 @@ in the [user guide](guide.md#concepts).
 - **R23.** Reading the state of a clone does not take git locks, so the dashboard does not
   disturb an IDE or Claude Code working in the same clone.
 - **R24.** Every message to the user says what happened and what to do next, in plain sentences.
+- **R25.** The dashboard can open `draupnir.toml` in the user's own editor, and shows the file in
+  the output when no editor is set. This is the one command that takes over the terminal, and it
+  only runs when the user asks for it. R22 still holds for every command draupnir runs itself.
 
 ## Things outside this tool
 

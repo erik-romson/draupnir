@@ -52,16 +52,56 @@ uv run --project [path to local checkout] draupnir init
 
 ### Restart the dashboards after cmux relaunches
 
-cmux restores its tabs after an update, but it does not start a dashboard again. Save the command
-once in each dashboard tab, before you start the dashboard there:
+cmux restores its tabs after an update or a crash, but it does not start a dashboard again. A
+command that was saved from the command line stays manual, because only a choice made in the cmux
+window can let cmux run it on its own. So you save the command once for each dashboard, and you
+run one script after cmux relaunches.
+
+#### Save the command
+
+Go to the tab where the dashboard runs. Quit the dashboard with `q`, so that you have a shell
+prompt. Then change into the workspace the dashboard watches, and save the command there:
 
 ```
+cd [path to workspace]
 cmux surface resume set -- uv run --project [path to local checkout] draupnir
 ```
 
-After cmux relaunches, run `bin/cmux-resume` from the checkout. It starts the command again in
-every tab where it was saved, and skips tabs that already run something. `--dry-run` shows what it
-would do. `--open-missing` opens a new workspace for a saved command whose tab is gone.
+cmux writes the command, the tab and the current folder into its own config file. Start the
+dashboard again afterwards. The folder has to be a draupnir workspace, so it needs `draupnir.toml`
+and `main/` next to each other. Run `draupnir init` there first when it does not. A dashboard that
+starts anywhere else prints that it found no workspace and quits at once.
+
+Save the command in one tab for each workspace. Two tabs that carry the same command start two
+dashboards on the same clones, which is confusing and doubles the git reads.
+
+Three commands show and change what cmux saved for the tab you are in:
+
+```
+cmux surface resume show                 # the command, the tab and the folder
+cmux surface resume set --cwd [path] -- uv run --project [checkout] draupnir
+cmux surface resume clear                # the tab starts nothing again
+```
+
+#### Restart the dashboards
+
+After cmux relaunches, run the script from the checkout:
+
+```
+bin/cmux-resume
+```
+
+It prints one line for each saved command. `start` means that it typed the command into the tab.
+`busy` means that the tab already runs something, so the script left it alone. `missing` means that
+the tab is gone. The script never types into a tab that runs a program, and it leaves the agent
+sessions to cmux, which restarts those itself.
+
+| Option | What it does |
+|---|---|
+| `--dry-run` | Prints the lines and types nothing |
+| `--match <text>` | Only saved commands whose command line contains the text |
+| `--open-missing` | Opens a new workspace for a saved command whose tab is gone |
+| `--config <file>` | Reads another cmux config file |
 
 ## Commands
 
@@ -69,7 +109,7 @@ would do. `--open-missing` opens a new workspace for a saved command whose tab i
 |---|---|
 | `draupnir`, `draupnir ui [branch]` | Start the dashboard |
 | `init [url] [--main-branch b]` | Write the workspace files and clone the project into `main/` |
-| `new <branch> [--base b] [--open]` | Create a clone next to `main/` |
+| `new <branch> [--base b] [--folder name] [--open]` | Create a clone next to `main/` |
 | `prepare [folder]` | Copy the local files and set up Maven again |
 | `status` | Print the state of every clone |
 | `fetch` | Fetch every clone |

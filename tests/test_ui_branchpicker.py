@@ -90,3 +90,30 @@ async def test_open_branch_moves_with_the_arrow_keys_and_escape_cancels(env: Env
 
         assert not isinstance(app.screen, BranchPickerScreen)
         assert not (env.root / "feature-two").exists()
+
+
+async def test_open_branch_creates_the_clone_in_the_folder_it_is_given(env: Env) -> None:
+    _push_branches(env, "feature/vessel-owner", "feature/renamed")
+    _, log = logger()
+    new_clone(env.ws(), "feature/renamed", None, log, "elsewhere")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        await pilot.press("b")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, BranchPickerScreen)
+        # The clone of feature/renamed has a folder name of its own, and it is still left out.
+        assert _shown(screen) == ["feature/vessel-owner"]
+        assert screen.folder_input.placeholder == "feature-vessel-owner"
+
+        screen.open_checkbox.value = False
+        screen.folder_input.value = "owner"
+        await pilot.press("enter")
+        await settle(app, pilot)
+
+        assert not isinstance(app.screen, BranchPickerScreen)
+        assert sh(env.root / "owner", "git", "branch", "--show-current") == "feature/vessel-owner"
+        assert not (env.root / "feature-vessel-owner").exists()

@@ -295,6 +295,7 @@ def test_ff_main_pushes_head_to_the_default_branch_and_updates_main(env: Env) ->
     _, log = logger()
     folder = new_clone(env.ws(), "feature/ff", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
 
     lines, collecting_log = logger()
@@ -337,6 +338,7 @@ def test_ff_main_refuses_a_failed_build_and_names_the_job(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/failed-build", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_build(
         sha,
         [Poll(check_runs=[CheckRun("unit tests", conclusion="failure", url="https://ci/1")])],
@@ -356,6 +358,7 @@ def test_ff_main_refuses_a_pending_build(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/pending-build", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_build(sha, [Poll(check_runs=[running("unit tests")])])
 
     with pytest.raises(OperationError) as excinfo:
@@ -369,6 +372,7 @@ def test_ff_main_refuses_when_no_build_exists(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/no-build", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
 
     with pytest.raises(OperationError) as excinfo:
         fast_forward_main(env.ws(), folder, log)
@@ -377,10 +381,25 @@ def test_ff_main_refuses_when_no_build_exists(env: Env) -> None:
     assert sh(env.remote, "git", "rev-parse", "main") != sha
 
 
+def test_ff_main_refuses_an_unpushed_head_without_asking_github(env: Env) -> None:
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/unpushed", None, log)
+    push(env.ws(), folder, log)
+    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+
+    with pytest.raises(OperationError) as excinfo:
+        fast_forward_main(env.ws(), folder, log)
+
+    assert "not pushed yet" in str(excinfo.value)
+    assert sh(env.remote, "git", "rev-parse", "main") != sha
+    assert env.gh.calls() == []
+
+
 def test_ff_main_refuses_when_the_build_state_is_only_partly_readable(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/partial-read", None, log)
     commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_failing(CHECK_RUNS)
 
     before = sh(env.remote, "git", "rev-parse", "main")
@@ -407,14 +426,15 @@ def test_ff_main_without_the_build_check_pushes_anyway(env: Env) -> None:
 
 
 def test_ff_main_explains_a_push_that_github_refuses(env: Env) -> None:
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/protected", None, log)
+    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
+    env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
     write_executable(
         env.remote / "hooks" / "pre-receive",
         "#!/bin/sh\necho 'protected branch hook declined' >&2\nexit 1\n",
     )
-    _, log = logger()
-    folder = new_clone(env.ws(), "feature/protected", None, log)
-    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
-    env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
 
     with pytest.raises(OperationError) as excinfo:
         fast_forward_main(env.ws(), folder, log)
@@ -428,6 +448,7 @@ def test_ff_main_succeeds_when_main_folder_cannot_be_updated(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/ff-broken-main", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    push(env.ws(), folder, log)
     env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
     _break_fetch(env.main)
 

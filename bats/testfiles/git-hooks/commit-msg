@@ -1,0 +1,3 @@
+#!/bin/sh
+# A commit-msg hook that every clone needs, and that git never tracks.
+exit 0

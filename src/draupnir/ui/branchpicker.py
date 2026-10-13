@@ -13,6 +13,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Label, OptionList
 from textual.widgets.option_list import Option
 
+from draupnir.setup import folder_for_branch
+
 
 def matching_branches(branches: Sequence[str], text: str) -> list[str]:
     """The branches that contain text anywhere in their name, ignoring case."""
@@ -22,9 +24,13 @@ def matching_branches(branches: Sequence[str], text: str) -> list[str]:
 
 @dataclass(frozen=True)
 class BranchChoice:
-    """The branch the user picked, and whether to open the IDE in the new clone."""
+    """The branch the user picked, its folder, and whether to open the IDE in the new clone.
+
+    folder is None when the user left it empty, and the folder then gets the branch name.
+    """
 
     branch: str
+    folder: str | None
     open_after: bool
 
 
@@ -54,6 +60,7 @@ class BranchPickerScreen(ModalScreen[BranchChoice | None]):
         self.search = Input(placeholder="Type part of the branch name", id="branch-search")
         self.options = OptionList(id="branch-options")
         self.count = Label(id="branch-count")
+        self.folder_input = Input(id="branch-folder")
         self.open_checkbox = Checkbox(
             "Open the IDE when the clone is ready", value=True, id="branch-open-after"
         )
@@ -67,6 +74,8 @@ class BranchPickerScreen(ModalScreen[BranchChoice | None]):
             yield self.search
             yield self.count
             yield self.options
+            yield Label("Folder name. Empty means the branch name with / replaced by -.")
+            yield self.folder_input
             yield self.open_checkbox
 
     def on_mount(self) -> None:
@@ -82,7 +91,15 @@ class BranchPickerScreen(ModalScreen[BranchChoice | None]):
         self.options.set_options(Option(branch, id=branch) for branch in matches)
         if matches:
             self.options.highlighted = 0
+        else:
+            self.folder_input.placeholder = ""
         self.count.update(f"{len(matches)} of {len(self.branches)} branches")
+
+    @on(OptionList.OptionHighlighted, "#branch-options")
+    def _option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        """Shows the folder the highlighted branch gets, as the placeholder of the folder input."""
+        if event.option.id is not None:
+            self.folder_input.placeholder = folder_for_branch(event.option.id)
 
     def action_move(self, step: int) -> None:
         if self.options.option_count == 0:
@@ -90,7 +107,7 @@ class BranchPickerScreen(ModalScreen[BranchChoice | None]):
         current = self.options.highlighted or 0
         self.options.highlighted = max(0, min(self.options.option_count - 1, current + step))
 
-    @on(Input.Submitted, "#branch-search")
+    @on(Input.Submitted, "#branch-search, #branch-folder")
     def _search_submitted(self) -> None:
         option = self.options.highlighted_option
         if option is not None and option.id is not None:
@@ -102,7 +119,8 @@ class BranchPickerScreen(ModalScreen[BranchChoice | None]):
             self._choose(event.option.id)
 
     def _choose(self, branch: str) -> None:
-        self.dismiss(BranchChoice(branch, self.open_checkbox.value))
+        folder = self.folder_input.value.strip() or None
+        self.dismiss(BranchChoice(branch, folder, self.open_checkbox.value))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

@@ -11,7 +11,8 @@ with your own project.
 - **`main/`.** A clone of the project on the default branch. New clones copy their local files
   from it.
 - **Feature clone.** An independent clone next to `main/`. Its folder is the branch name with `/`
-  replaced by `-`, so `feature/vessel-owner` lives in `feature-vessel-owner/`.
+  replaced by `-`, so `feature/vessel-owner` lives in `feature-vessel-owner/`. `--folder` gives
+  the folder another name.
 - **Local files.** Files that are not in git but that every clone needs, such as
   `.claude/settings.local.json`. `draupnir.toml` lists them.
 - **Private Maven repository.** Each clone installs into its own `.m2repo`, and reads everything
@@ -73,8 +74,15 @@ draupnir new feature/vessel-owner
 
 **Start a branch.** `draupnir new feature/vessel-owner` checks out the branch with tracking when
 it exists on GitHub. Otherwise it creates the branch from the latest `origin/main`, or from
-`--base <branch>`. `--open` starts IntelliJ IDEA for a Java project and PyCharm for a Python
-project.
+`--base <branch>`. `--folder <name>` puts the clone in a folder of that name instead of one named
+after the branch, for example `draupnir new feature/vessel-owner --folder owner`. `--open` starts IntelliJ IDEA for a Java project, Android Studio for an Android
+project and PyCharm for a Python project.
+
+**Project names in the IDE.** Every clone of `shop` would otherwise show up in the IDE by its folder
+name, and `main` says little. So when draupnir opens a clone that the IDE has opened before, it
+names the project after the workspace and the folder, for example `shop main` or
+`shop feature-vessel-owner`. It writes `.idea/.name` only when that file does not exist, so a
+name you give the project in the IDE is kept.
 
 **See every clone.** `draupnir status` prints one line per clone: branch, commits ahead and behind
 the default branch and the upstream branch, and local changes. The numbers are only as new as the
@@ -90,7 +98,7 @@ never overwritten. The default branch is never force-pushed.
 
 **Fast-forward the default branch.** `draupnir ff-main` pushes the clone's head to the default
 branch without force. The branch must be on top of `origin/<default>`, and its build must be green.
-Afterwards `main/` is updated. When the default branch requires a review, GitHub refuses this
+So push the head first and wait for its build, for example with `draupnir push --follow`. Afterwards `main/` is updated. When the default branch requires a review, GitHub refuses this
 push. Set `actions.fast-forward-main = false` and use `draupnir pr` instead.
 
 **Merge through a pull request.** `draupnir pr` pushes, creates a pull request or reuses the open
@@ -134,26 +142,44 @@ the branch filled in.
 operation in progress, and the last known build. The table is read again every
 `ui.refresh-seconds`, without a fetch.
 
-Select a row and press a button. Actions that need a feature branch are disabled for `main/`.
-Actions that change the default branch or delete a folder ask first. Only one action runs at a
-time.
+Select a row and press a button. Fast-forward main and Pull request and merge need a feature
+branch, so they are disabled for `main/` and for a clone that sits on the default branch. Remove
+clone is disabled for `main/` alone, and removes a clone on any branch. Actions that change the
+default branch or delete a folder ask first. Only one action runs at a time.
 
 The output area shows every command as it runs. "Stop waiting" ends the wait for a build, not the
 build itself. "Build status" reads the result again later.
+
+**Edit config.** The "Edit config" button opens `draupnir.toml` in the editor from
+`DRAUPNIR_EDITOR`, `VISUAL` or `EDITOR`. The dashboard steps aside while the editor runs, and
+comes back when it ends. When none of these variables is set, the button writes the file into the
+output instead. draupnir reads the config again afterwards, and says so when the file no longer
+parses. Which buttons are shown, the default branch and the refresh time are read when the
+dashboard starts, so restart draupnir after you change them.
+
+**New cmux workspace.** When draupnir runs in a cmux terminal, this button opens a new cmux
+workspace with a shell in the selected clone and the cmux todo list below it, and switches to it.
+The workspace is called `<workspace> <folder>`, like the IDE project. When the dashboard's cmux
+workspace is in a sidebar group, the new workspace joins that group, right after the dashboard.
+Outside cmux the button is hidden.
 
 | Key | Action |
 |---|---|
 | `r` | Refresh, without a fetch |
 | `f` | Fetch all |
 | `b` | Open a branch from GitHub as a new clone |
+| `c` | Edit `draupnir.toml` |
 | `o` | Open the IDE |
+| `w` | Open a cmux workspace in the selected clone, when draupnir runs in cmux |
 | `n` | New clone tab |
 | `p` | Projects tab |
 | `q` | Quit |
 
 **Open branch.** Type part of a branch name, anywhere in the name. The list narrows as you type.
 Use ↑ and ↓ to choose, and Enter to create the clone. The list comes from the last fetch, so run
-Fetch all first to see new branches. Branches that already have a clone are left out.
+Fetch all first to see new branches. Branches that already have a clone are left out. The folder
+field is optional. Its placeholder shows the folder the highlighted branch gets when it stays
+empty.
 
-**New clone tab.** Enter a branch and an optional base branch. This does the same as
-`draupnir new`. A checkbox opens the IDE afterwards.
+**New clone tab.** Enter a branch, an optional base branch and an optional folder name. This does
+the same as `draupnir new`. A checkbox opens the IDE afterwards.
