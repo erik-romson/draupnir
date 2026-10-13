@@ -201,7 +201,27 @@ def _set_build_timeout(env: Env, seconds: float) -> None:
 
 
 def _build_cell(app: DraupnirApp, name: str) -> str:
-    return app.projects.table.get_cell(name, "build").plain
+    """The build state in the Build cell, without the padding and the link arrow of the button."""
+    return app.projects.table.get_cell(name, "build").plain.strip().removesuffix(" ↗")
+
+
+def _record_opened_urls(app: DraupnirApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Makes the app record the URLs it opens, instead of starting a browser."""
+    opened: list[str] = []
+
+    def open_url(url: str, *, new_tab: bool = True) -> None:
+        opened.append(url)
+
+    monkeypatch.setattr(app, "open_url", open_url)
+    return opened
+
+
+def _build_cell_offset(app: DraupnirApp, name: str) -> tuple[int, int]:
+    """Where the Build cell of the clone called name is, relative to the table."""
+    table = app.projects.table
+    build_column = table.get_column_index("build")
+    x = sum(column.get_render_width(table) for column in table.ordered_columns[:build_column])
+    return x + 2, 1 + _row_names(app).index(name)
 
 
 async def test_ui_push_and_follow_updates_the_build_column_while_waiting(env: Env) -> None:
@@ -283,6 +303,78 @@ async def test_ui_stop_waiting_ends_the_action_and_keeps_the_last_state(env: Env
         await pilot.click("#build-status")
         await settle(app, pilot)
         assert "=== Done: Build status of feature-stop" in _output_lines(app)
+
+
+async def test_a_click_on_the_build_cell_opens_the_failed_job(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/red", None, log)
+    new_clone(env.ws(), "feature/other", None, log)
+    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    failed_url = "https://ci.example.com/runs/lint"
+    env.gh.set_build(
+        sha,
+        [Poll(check_runs=[CheckRun("build"), CheckRun("lint", "failure", url=failed_url)])],
+    )
+
+    app = DraupnirApp(env.ws())
+    opened = _record_opened_urls(app, monkeypatch)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        _select(app, "feature-red")
+        await pilot.click("#build-status")
+        await settle(app, pilot)
+        assert _build_cell(app, "feature-red") == "failure"
+
+        # The click lands on a row that is not selected. It opens the build at once.
+        _select(app, "feature-other")
+        await pilot.pause()
+        await pilot.click("#table", offset=_build_cell_offset(app, "feature-red"))
+        await pilot.pause()
+
+        assert opened == [failed_url]
+        selected = app.projects.selected_status()
+        assert selected is not None
+        assert selected.name == "feature-red"
+
+
+async def test_open_build_key_and_job_links_open_the_build(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/green", None, log)
+    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    build_url = "https://ci.example.com/runs/build"
+    lint_url = "https://ci.example.com/runs/lint"
+    env.gh.set_build(
+        sha, [Poll(check_runs=[CheckRun("build", url=build_url), CheckRun("lint", url=lint_url)])]
+    )
+
+    app = DraupnirApp(env.ws())
+    opened = _record_opened_urls(app, monkeypatch)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        _select(app, "feature-green")
+        await pilot.pause()
+
+        # No build is known yet, so the key opens nothing.
+        await pilot.press("g")
+        await pilot.pause()
+        assert opened == []
+
+        await pilot.click("#build-status")
+        await settle(app, pilot)
+        await pilot.press("g")
+        await pilot.pause()
+        assert opened == [build_url]
+
+        # Each job in the details line is a link to its own page.
+        lines = app.projects.details.render_lines(app.projects.details.region.reset_offset)
+        lint_line = next(index for index, line in enumerate(lines) if "lint: success" in line.text)
+        await pilot.click("#details", offset=(4, lint_line))
+        await pilot.pause()
+        assert opened == [build_url, lint_url]
 
 
 async def test_ff_main_is_hidden_when_disabled_in_config(env: Env) -> None:

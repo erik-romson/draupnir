@@ -217,6 +217,14 @@ branch of every clone from git, so nothing else depends on the folder name. Open
 leaves out a branch that any clone is on, and not only a branch whose default folder exists. The
 folder must be a plain name next to `main/`, so `/`, `.`, `..` and `main` are refused.
 
+**D50. The Build cell is the button that opens the build.** A Textual table cannot hold a widget,
+so the cell is text styled as a button, and a click on it opens the build. A separate button
+would act on the selected row only, and the grid already has twelve buttons. The `g` key does the
+same from the keyboard. The page is the first failed job, else the first job that still runs,
+else the first job, because a failed job is the one to look at. The job URLs come from the
+check runs and commit statuses that draupnir already reads, so no extra `gh` call is needed.
+The browser starts through Textual's `open_url`, which does not wait for it.
+
 ## Project
 
 **D28. A public repository on github.com.** Committed files use a neutral example and never name a

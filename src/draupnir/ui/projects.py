@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from rich.style import Style
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Grid
 from textual.message import Message
@@ -145,7 +146,15 @@ COLUMNS: tuple[tuple[str, str], ...] = (
     ("build", "Build"),
 )
 
-_BUILD_STYLES = {"success": "green", "failure": "red", "pending": "yellow"}
+# The Build cell looks like a button, in the colour of the state. A click on it opens the build.
+# The colours are hex values, because a terminal theme can change the named colours. White text
+# keeps a contrast of about 5:1 on every background.
+_BUILD_STYLES = {
+    "success": "bold #ffffff on #1a7f37",
+    "failure": "bold #ffffff on #cf222e",
+    "pending": "bold #ffffff on #9a6700",
+}
+_OTHER_BUILD_STYLE = "bold #ffffff on #57606a"
 
 
 def _is_older_commit(status: ProjectStatus, build: BuildState) -> bool:
@@ -202,13 +211,18 @@ def status_row(status: ProjectStatus, main_branch: str, build: BuildState | None
         label = build.state
         if _is_older_commit(status, build):
             label += " (older commit)"
-        build_cell = Text(label, style=_BUILD_STYLES.get(build.state, ""))
+        if build.job_to_open() is not None:
+            label += " ↗"
+        build_cell = Text(f" {label} ", style=_BUILD_STYLES.get(build.state, _OTHER_BUILD_STYLE))
 
     return [Text(status.name), branch, vs_main, vs_upstream, changes, operation, build_cell]
 
 
 def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text:
-    """The details line under the table, for the selected clone."""
+    """The details line under the table, for the selected clone.
+
+    A job with a URL is a link: a click on it opens the job in the browser.
+    """
     if status is None:
         return Text("")
     lines = [str(status.folder)]
@@ -222,15 +236,45 @@ def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text
             f"A {status.operation} is in progress. Finish it or abort it before you start an "
             "action on this clone."
         )
-    if build is not None:
-        older = " (older commit)" if _is_older_commit(status, build) else ""
-        lines.append(f"Build of {build.sha[:10]}{older}: {build.summary()}")
-        for item in build.items[:DETAILS_JOBS]:
-            lines.append(f"  {item.name}: {item.state}")
-        hidden = len(build.items) - DETAILS_JOBS
-        if hidden > 0:
-            lines.append(f"  and {hidden} more. Build status shows every job in the output.")
-    return Text("\n".join(lines))
+    text = Text("\n".join(lines))
+    if build is None:
+        return text
+    older = " (older commit)" if _is_older_commit(status, build) else ""
+    text.append(f"\nBuild of {build.sha[:10]}{older}: {build.summary()}")
+    for item in build.items[:DETAILS_JOBS]:
+        text.append("\n  ")
+        if item.url:
+            text.append(f"{item.name}: {item.state} ↗", style=_link_style(item.url))
+        else:
+            text.append(f"{item.name}: {item.state}")
+    hidden = len(build.items) - DETAILS_JOBS
+    if hidden > 0:
+        text.append(f"\n  and {hidden} more. Build status shows every job in the output.")
+    return text
+
+
+def _link_style(url: str) -> Style:
+    """A style that opens url in the browser when the text is clicked."""
+    return Style(underline=True, meta={"@click": f"app.open_url({url!r})"})
+
+
+class StatusTable(DataTable[Text]):
+    """The status table. A click on a Build cell posts `BuildClicked`, and selects the row."""
+
+    class BuildClicked(Message):
+        """The user clicked the Build cell of the row at index row."""
+
+        def __init__(self, row: int) -> None:
+            super().__init__()
+            self.row = row
+
+    def on_click(self, event: events.Click) -> None:
+        # DataTable's own click handler runs after this one, and moves the cursor to the row.
+        meta = event.style.meta
+        row = meta.get("row")
+        column = meta.get("column")
+        if isinstance(row, int) and row >= 0 and column == self.get_column_index("build"):
+            self.post_message(self.BuildClicked(row))
 
 
 class ProjectsView(Widget):
@@ -238,7 +282,7 @@ class ProjectsView(Widget):
 
     The widget holds no logic. The app gives it the statuses, the known builds and whether an
     action runs, and the widget shows them. Button presses and a new selection are posted to the
-    app as `ActionRequested` and `ProjectSelected`.
+    app as `ActionRequested` and `ProjectSelected`, and a click on a Build cell as `BuildRequested`.
     """
 
     DEFAULT_CSS = """
@@ -255,6 +299,13 @@ class ProjectsView(Widget):
         def __init__(self, action: str) -> None:
             super().__init__()
             self.action = action
+
+    class BuildRequested(Message):
+        """The user clicked the Build cell of the clone called name."""
+
+        def __init__(self, name: str) -> None:
+            super().__init__()
+            self.name = name
 
     class ProjectSelected(Message):
         """The user selected another row. status is None when the table is empty."""
@@ -275,7 +326,7 @@ class ProjectsView(Widget):
         self.main_folder = main_folder
         self.main_branch = main_branch
         self.shown_actions = frozenset(shown_actions)
-        self.table: DataTable[Text] = DataTable(id="table", cursor_type="row", zebra_stripes=True)
+        self.table = StatusTable(id="table", cursor_type="row", zebra_stripes=True)
         self.details = Static(id="details")
         self.buttons = {
             spec.name: Button(
@@ -380,6 +431,12 @@ class ProjectsView(Widget):
         self._update_details()
         self._update_buttons()
         self.post_message(self.ProjectSelected(self.selected_status()))
+
+    @on(StatusTable.BuildClicked)
+    def _build_clicked(self, event: StatusTable.BuildClicked) -> None:
+        event.stop()
+        if 0 <= event.row < len(self._statuses):
+            self.post_message(self.BuildRequested(self._statuses[event.row].name))
 
     @on(Button.Pressed)
     def _button_pressed(self, event: Button.Pressed) -> None:

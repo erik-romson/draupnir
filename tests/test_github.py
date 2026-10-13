@@ -91,6 +91,19 @@ def test_build_state_combines_check_runs_and_commit_statuses(env: Env) -> None:
     assert build_state(env.main, sha).state == PENDING
 
 
+def test_job_to_open_prefers_a_failed_job_then_a_running_job() -> None:
+    green = BuildItem("unit tests", SUCCESS, "https://ci.example.com/runs/1")
+    running_job = BuildItem("lint", PENDING, "https://ci.example.com/runs/2")
+    failed = BuildItem("jenkins", FAILURE, "https://jenkins.example.com/job/shop/7")
+    no_url = BuildItem("deploy", FAILURE, "")
+
+    assert BuildState("abc", FAILURE, (green, running_job, no_url, failed)).job_to_open() == failed
+    assert BuildState("abc", PENDING, (green, running_job)).job_to_open() == running_job
+    assert BuildState("abc", SUCCESS, (green,)).job_to_open() == green
+    assert BuildState("abc", FAILURE, (no_url,)).job_to_open() is None
+    assert BuildState("abc", NONE).job_to_open() is None
+
+
 def test_build_state_is_failure_when_any_item_fails(env: Env) -> None:
     sha = _head(env)
     cases = [

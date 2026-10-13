@@ -82,6 +82,7 @@ class DraupnirApp(App[None]):
         Binding("o", "open_ide", "Open IDE"),
         Binding("w", "open_cmux_workspace", "cmux workspace"),
         Binding("b", "open_branch", "Open branch"),
+        Binding("g", "open_build", "Open build"),
         Binding("c", "edit_config", "Edit config"),
         Binding("n", "show_new_clone", "New clone"),
         Binding("p", "show_projects", "Projects"),
@@ -352,6 +353,10 @@ class DraupnirApp(App[None]):
         if handler is not None:
             handler()
 
+    @on(ProjectsView.BuildRequested)
+    def _build_requested(self, event: ProjectsView.BuildRequested) -> None:
+        self._open_build(event.name)
+
     @on(OutputArea.StopWaitingRequested)
     def _stop_waiting(self) -> None:
         if not self.busy or self.cancel_event.is_set():
@@ -433,6 +438,38 @@ class DraupnirApp(App[None]):
                 self._start_new_clone(choice.branch, None, choice.folder, choice.open_after)
 
         self.push_screen(BranchPickerScreen(without_clone), chosen)
+
+    def action_open_build(self) -> None:
+        """Opens the last known build of the selected clone in the browser."""
+        selected = self.projects.selected_status()
+        if selected is not None:
+            self._open_build(selected.name)
+
+    def action_open_url(self, url: str) -> None:
+        """Opens url in the browser. The links in the details line use this action."""
+        self.open_url(url)
+
+    def _open_build(self, name: str) -> None:
+        """Opens one job of the last known build of the clone called name in the browser.
+
+        The job is the first failed job, else the first job that still runs, else the first job.
+        This only reads what the dashboard already knows, so it works while an action runs.
+        """
+        build = self.builds.get(name)
+        if build is None:
+            self.notify(
+                f"draupnir does not know a build of {name} yet. Press Build status to read it.",
+                severity="warning",
+            )
+            return
+        job = build.job_to_open()
+        if job is None:
+            self.notify(
+                f"The build of {name} has no job with a web page to open.", severity="warning"
+            )
+            return
+        self.open_url(job.url)
+        self.notify(f"Opening {job.name} of {name} in the browser.")
 
     def action_show_projects(self) -> None:
         self.query_one("#tabs", TabbedContent).active = "projects"

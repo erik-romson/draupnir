@@ -150,6 +150,12 @@ default branch or delete a folder ask first. Only one action runs at a time.
 The output area shows every command as it runs. "Stop waiting" ends the wait for a build, not the
 build itself. "Build status" reads the result again later.
 
+**Open a build.** The Build column looks like a button in the colour of the state. Click it, or
+press `g` on the selected row, to open the build in the browser. draupnir opens the first failed
+job, else the first job that still runs, else the first job. The details line under the table
+lists the jobs of the selected clone's build, and a click on a job opens that job. Both work
+while an action runs, because they only use the build that draupnir already read.
+
 **Edit config.** The "Edit config" button opens `draupnir.toml` in the editor from
 `DRAUPNIR_EDITOR`, `VISUAL` or `EDITOR`. The dashboard steps aside while the editor runs, and
 comes back when it ends. When none of these variables is set, the button writes the file into the
@@ -170,6 +176,7 @@ Outside cmux the button is hidden.
 | `b` | Open a branch from GitHub as a new clone |
 | `c` | Edit `draupnir.toml` |
 | `o` | Open the IDE |
+| `g` | Open the build of the selected clone in the browser |
 | `w` | Open a cmux workspace in the selected clone, when draupnir runs in cmux |
 | `n` | New clone tab |
 | `p` | Projects tab |

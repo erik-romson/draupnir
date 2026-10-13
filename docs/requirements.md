@@ -70,6 +70,7 @@ in the [user guide](guide.md#concepts).
 - **R16.** For each clone the list shows: folder, branch, commits ahead and behind
   `origin/<default branch>`, commits ahead and behind the branch on GitHub (or "not pushed"),
   local changes, an operation in progress such as a rebase, and the last known build result.
+  A click on the build result, or a key, opens the build in the browser.
 - **R17.** Actions on the selected clone:
 
   | Action | Behaviour |

@@ -75,6 +75,19 @@ class BuildState:
     def failed_items(self) -> list[BuildItem]:
         return [item for item in self.items if item.state == FAILURE]
 
+    def job_to_open(self) -> BuildItem | None:
+        """The job to open in the browser, or None when no job has a URL.
+
+        A failed job comes first, then a job that still runs, then the first job. Only jobs with
+        a URL count.
+        """
+        with_url = [item for item in self.items if item.url]
+        for state in (FAILURE, PENDING):
+            for item in with_url:
+                if item.state == state:
+                    return item
+        return with_url[0] if with_url else None
+
 
 @dataclass(frozen=True)
 class BuildTiming:
