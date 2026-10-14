@@ -221,7 +221,7 @@ def status_row(status: ProjectStatus, main_branch: str, build: BuildState | None
 def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text:
     """The details line under the table, for the selected clone.
 
-    A job with a URL is a link: a click on it opens the job in the browser.
+    A job with a web page is a link: a click on it opens the job in the browser.
     """
     if status is None:
         return Text("")
@@ -243,7 +243,7 @@ def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text
     text.append(f"\nBuild of {build.sha[:10]}{older}: {build.summary()}")
     for item in build.items[:DETAILS_JOBS]:
         text.append("\n  ")
-        if item.url:
+        if item.has_web_page():
             text.append(f"{item.name}: {item.state} ↗", style=_link_style(item.url))
         else:
             text.append(f"{item.name}: {item.state}")

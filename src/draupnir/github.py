@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from draupnir.config import BuildConfig
 from draupnir.errors import OperationError
@@ -51,6 +52,13 @@ class BuildItem:
     state: str
     url: str
 
+    def has_web_page(self) -> bool:
+        """True when url is an http or https address. draupnir opens no other kind of URL.
+
+        A commit status can carry any URL, so a file or app URL is never handed to the browser.
+        """
+        return urlsplit(self.url).scheme in ("http", "https")
+
 
 @dataclass(frozen=True)
 class BuildState:
@@ -76,12 +84,12 @@ class BuildState:
         return [item for item in self.items if item.state == FAILURE]
 
     def job_to_open(self) -> BuildItem | None:
-        """The job to open in the browser, or None when no job has a URL.
+        """The job to open in the browser, or None when no job has a web page.
 
         A failed job comes first, then a job that still runs, then the first job. Only jobs with
-        a URL count.
+        a web page count.
         """
-        with_url = [item for item in self.items if item.url]
+        with_url = [item for item in self.items if item.has_web_page()]
         for state in (FAILURE, PENDING):
             for item in with_url:
                 if item.state == state:
