@@ -61,7 +61,17 @@ cmux-status = true
 java = "idea"
 android = "studio"
 python = "pycharm"
+
+[cmux]
+# Give every new clone a terminal session through cmux local-tmux.
+session = true
+# Inside cmux, open a cmux workspace for every new clone, with its terminal session.
+clone-workspace = true
 ```
+
+A draupnir version without the `[cmux]` section refuses a `draupnir.toml` that has a real
+`[cmux]` header. So `draupnir init` writes the header commented out. Remove the `# ` only when
+everyone who shares the file has a draupnir version that knows the section.
 
 draupnir picks the IDE from the files in the clone. A Gradle project whose `build.gradle.kts`,
 `settings.gradle.kts` or `gradle/libs.versions.toml` names the Android Gradle plugin opens in

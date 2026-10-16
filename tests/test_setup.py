@@ -19,6 +19,7 @@ from helpers import (
 )
 
 from draupnir.cli import main
+from draupnir.config import load_config
 from draupnir.errors import OperationError
 from draupnir.runner import NETWORK_HINT
 from draupnir.setup import (
@@ -374,6 +375,23 @@ def test_init_writes_the_repository_url_into_the_config(env: Env) -> None:
 
     content = (root / "draupnir.toml").read_text()
     assert f'repository = "{env.remote}"' in content
+
+
+def test_init_template_holds_the_cmux_section_with_its_header_commented_out(env: Env) -> None:
+    root = env.tmp / "fresh-workspace-cmux"
+    root.mkdir()
+    _, log = logger()
+
+    init(root, str(env.remote), log)
+
+    lines = (root / "draupnir.toml").read_text().splitlines()
+    assert "# [cmux]" in lines
+    assert "# session = true" in lines
+    assert "# clone-workspace = true" in lines
+    assert "[cmux]" not in lines
+    config = load_config(root)
+    assert config.cmux.session is True
+    assert config.cmux.clone_workspace is True
 
 
 def test_init_in_a_cloned_workspace_uses_the_url_from_the_config(env: Env) -> None:

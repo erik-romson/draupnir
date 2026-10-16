@@ -309,6 +309,15 @@ def _toml_template(url: str | None) -> str:
 # java = "idea"
 # android = "studio"
 # python = "pycharm"
+
+# The header below stays commented out on purpose. A draupnir version without this section
+# refuses a draupnir.toml that has a real [cmux] header. Remove the "# " of the header only
+# when everyone who shares this file has a draupnir version that knows the section.
+# [cmux]
+# Give every new clone a terminal session through cmux local-tmux.
+# session = true
+# Inside cmux, open a cmux workspace for every new clone, with its terminal session.
+# clone-workspace = true
 """
 
 

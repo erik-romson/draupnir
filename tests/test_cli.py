@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from conftest import Env
-from helpers import FakeStdin, cmux_calls, sh, write_stub_cmux
+from helpers import FakeStdin, append_config, cmux_calls, sh, write_stub_cmux
 
 from draupnir import __version__
 from draupnir.cli import confirm, main
@@ -231,6 +231,22 @@ def test_attach_starts_the_session_and_prints_the_line(
     assert code == 0
     assert captured.out == attach_line(clone) + "\n"
     assert "local-tmux start" in captured.err
+    assert _starts(calls) == [
+        ["local-tmux", "start", "shop-feature-a", "--cwd", str(clone.resolve()), "--detached"]
+    ]
+
+
+def test_attach_ignores_session_false_in_the_config(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    append_config(env.root, "\n[cmux]\nsession = false\n")
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    assert code == 0
+    assert capsys.readouterr().out == attach_line(clone) + "\n"
     assert _starts(calls) == [
         ["local-tmux", "start", "shop-feature-a", "--cwd", str(clone.resolve()), "--detached"]
     ]

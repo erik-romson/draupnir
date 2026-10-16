@@ -31,6 +31,8 @@ def test_empty_config_gives_defaults(tmp_path: Path) -> None:
     assert config.ide.java is None
     assert config.ide.android is None
     assert config.ide.python is None
+    assert config.cmux.session is True
+    assert config.cmux.clone_workspace is True
 
 
 def test_config_reads_every_section(tmp_path: Path) -> None:
@@ -64,6 +66,10 @@ cmux-status = false
 java = "idea-custom"
 android = "studio-custom"
 python = "pycharm-custom"
+
+[cmux]
+session = false
+clone-workspace = false
 """,
     )
 
@@ -85,6 +91,8 @@ python = "pycharm-custom"
     assert config.ide.java == "idea-custom"
     assert config.ide.android == "studio-custom"
     assert config.ide.python == "pycharm-custom"
+    assert config.cmux.session is False
+    assert config.cmux.clone_workspace is False
 
 
 def test_config_rejects_an_unknown_key_with_its_name(tmp_path: Path) -> None:
@@ -96,6 +104,51 @@ def test_config_rejects_an_unknown_key_with_its_name(tmp_path: Path) -> None:
     message = str(exc_info.value)
     assert "build.poll-second" in message
     assert "poll-seconds, grace-seconds and timeout-seconds" in message
+
+
+def test_config_reads_each_cmux_key_on_its_own(tmp_path: Path) -> None:
+    _write(tmp_path, "[cmux]\nsession = false\n")
+    config = load_config(tmp_path)
+    assert config.cmux.session is False
+    assert config.cmux.clone_workspace is True
+
+    _write(tmp_path, "[cmux]\nclone-workspace = false\n")
+    config = load_config(tmp_path)
+    assert config.cmux.session is True
+    assert config.cmux.clone_workspace is False
+
+
+def test_config_rejects_a_cmux_value_that_is_not_a_boolean(tmp_path: Path) -> None:
+    _write(tmp_path, '[cmux]\nsession = "no"\n')
+
+    with pytest.raises(OperationError) as exc_info:
+        load_config(tmp_path)
+
+    message = str(exc_info.value)
+    assert "cmux.session" in message
+    assert "is not a boolean" in message
+
+
+def test_config_rejects_an_unknown_cmux_key_and_lists_the_known_keys(tmp_path: Path) -> None:
+    _write(tmp_path, "[cmux]\ncolour = 1\n")
+
+    with pytest.raises(OperationError) as exc_info:
+        load_config(tmp_path)
+
+    message = str(exc_info.value)
+    assert "cmux.colour" in message
+    assert "session and clone-workspace" in message
+
+
+def test_config_rejects_an_unknown_section_and_lists_the_known_sections(tmp_path: Path) -> None:
+    _write(tmp_path, "[cmuxx]\nsession = true\n")
+
+    with pytest.raises(OperationError) as exc_info:
+        load_config(tmp_path)
+
+    message = str(exc_info.value)
+    assert "[cmuxx]" in message
+    assert "cmux" in message.split("The known sections are")[1]
 
 
 def test_config_rejects_a_wrong_type_with_the_key(tmp_path: Path) -> None:

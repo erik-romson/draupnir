@@ -13,7 +13,7 @@ from draupnir.errors import OperationError
 
 CONFIG_FILE_NAME = "draupnir.toml"
 
-_KNOWN_SECTIONS = ("workspace", "maven", "build", "actions", "ui", "ide")
+_KNOWN_SECTIONS = ("workspace", "maven", "build", "actions", "ui", "ide", "cmux")
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,14 @@ class IdeConfig:
 
 
 @dataclass(frozen=True)
+class CmuxConfig:
+    # A terminal session for every clone, through cmux local-tmux.
+    session: bool = True
+    # Inside cmux, a cmux workspace for every new clone.
+    clone_workspace: bool = True
+
+
+@dataclass(frozen=True)
 class Config:
     workspace: WorkspaceConfig = WorkspaceConfig()
     maven: MavenConfig = MavenConfig()
@@ -66,6 +74,7 @@ class Config:
     actions: ActionsConfig = ActionsConfig()
     ui: UiConfig = UiConfig()
     ide: IdeConfig = IdeConfig()
+    cmux: CmuxConfig = CmuxConfig()
 
 
 def _join_and(items: Sequence[str]) -> str:
@@ -234,6 +243,14 @@ def _load_ide(data: dict[str, Any]) -> IdeConfig:
     )
 
 
+def _load_cmux(data: dict[str, Any]) -> CmuxConfig:
+    _check_keys("cmux", data, ["session", "clone-workspace"])
+    return CmuxConfig(
+        session=_bool("cmux", "session", data, True),
+        clone_workspace=_bool("cmux", "clone-workspace", data, True),
+    )
+
+
 def _read_toml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -293,5 +310,6 @@ def load_config(root: Path) -> Config:
         actions=_load_actions(data.get("actions", {})),
         ui=_load_ui(data.get("ui", {})),
         ide=_load_ide(data.get("ide", {})),
+        cmux=_load_cmux(data.get("cmux", {})),
     )
     return _apply_environment(config)
