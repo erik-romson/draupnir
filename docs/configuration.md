@@ -69,6 +69,11 @@ session = true
 clone-workspace = true
 ```
 
+With `session = false`, `new` starts no session. `draupnir attach` still starts one, because you
+asked for it, and `remove` still closes the clone's own session. A workspace that `new` opens is
+then a plain shell, as the `w` key made before, with no saved command. `clone-workspace = false`
+stops `new` from opening a workspace. `--workspace` and `--no-workspace` override it for one run.
+
 A draupnir version without the `[cmux]` section refuses a `draupnir.toml` that has a real
 `[cmux]` header. So `draupnir init` writes the header commented out. Remove the `# ` only when
 everyone who shares the file has a draupnir version that knows the section.

@@ -15,7 +15,8 @@ src/draupnir/
   github.py       gh login check, build state, waiting for builds, pull requests
   operations.py   fetch, rebase, push, fast-forward main, the pull request flow
   ide.py          finds and starts IntelliJ IDEA, Android Studio or PyCharm
-  cmux.py         finds the cmux tool, opens cmux workspaces, writes the sidebar status
+  cmux.py         finds the cmux tool, starts and closes the terminal session of a clone, opens
+                  and finds its workspace, writes the sidebar status
   ui/
     app.py        the Textual app: tabs, key bindings, running one action at a time
     projects.py   the Projects tab
@@ -34,6 +35,17 @@ The CLI and the dashboard call the same functions. Only `ui/` imports Textual.
 - `setup.py` and `operations.py` take a `Workspace`, which holds the `Config`.
 - Only `config.py`, `ide.py` and `cmux.py` read the environment.
 
+## Terminal sessions
+
+`cmux.py` starts and closes the terminal session of a clone, and opens and finds its workspace.
+The session is wired in from `cli.py` and `ui/app.py`, not from `setup.py`. `setup.py` cannot
+import `cmux.py`, because `cmux.py` imports `ide.py` and `ide.py` imports `setup.py`. So
+`remove_clone` takes a `before_delete` callback. The callers pass a function that closes the
+session and the workspace, and `remove_clone` runs it after the checks passed and before it
+deletes the folder. `open_clone_terminal`, `session_note` and `close_clone_terminal` never raise
+for an expected failure, so a terminal that does not work never stops `new` or `remove`.
+`draupnir attach` and the `w` key do raise, because the user asked for them.
+
 ## Running commands
 
 All commands go through `runner.run`. It:
@@ -43,6 +55,10 @@ All commands go through `runner.run`. It:
   `GIT_SEQUENCE_EDITOR=true`, `GCM_INTERACTIVE=never`, `SSH_ASKPASS_REQUIRE=never`,
   `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1` and `CLICOLOR=0`;
 - stops the whole process group on a timeout or an interrupt.
+
+`runner.run` also takes an `env` keyword. It replaces the environment above with the one it is
+given. It is only for a command that starts a program the user works in, such as the terminal
+session of a clone. Every other command keeps the no-prompt environment.
 
 Timeouts are constants in `runner.py`: 10 minutes for `git fetch` and `git push`, 2 minutes for
 `gh`, none for `git clone` and Maven.
@@ -69,7 +85,10 @@ Two suites test draupnir. `AGENTS.md` says which suite a change needs.
   found it would call the user's own desktop. A test that needs a cmux writes a stub with
   `write_stub_cmux`.
 
-`tests/helpers.py` holds typed helpers such as `commit`, `push_from_other_clone` and `logger`.
+`tests/helpers.py` holds typed helpers such as `commit`, `push_from_other_clone` and `logger`. It
+also holds `write_stub_cmux` and `write_stub_tmux`, which stand in for the terminal tools. The
+stub cmux knows sessions, a workspace tree, saved bindings and failures. `tests/test_cmux_resume.py`
+tests `bin/cmux-resume` against a stub cmux and a stub `ps`.
 
 CLI tests call `cli.main(argv)` and read `capsys`. UI tests use Textual's pilot and wait on
 `app.workers.wait_for_complete()` and `pilot.pause()`, never on fixed sleeps.

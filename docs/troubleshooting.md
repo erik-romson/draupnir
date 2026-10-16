@@ -32,6 +32,34 @@ the dashboard says that it found no workspace. Run `cmux surface resume show` in
 folder. Run `draupnir init` in that folder, or save the command again with
 `cmux surface resume set --cwd [path to workspace]`.
 
+**The session belongs to another folder.** Another folder already has a session of the same name,
+such as `shop/feature-login` and `shop-feature/login`. draupnir never uses or closes a session of
+another folder. Close the old one with `cmux local-tmux close <name>` when you do not need it, or
+give the clone another folder name with `--folder`.
+
+**The tab came back as an empty shell.** cmux restored the tab, but nobody typed the attach line
+into it. Run `bin/cmux-resume` from the draupnir checkout. It types the line into every tab that
+holds a saved command and runs nothing.
+
+**The session is gone after a reboot.** A reboot stops tmux and every session with it. Run
+`draupnir attach` in the clone. It starts the session again and prints the line that joins it.
+
+**A session stays after a clone was deleted or moved by hand.** draupnir closes the session only
+in `remove`. List the sessions with `cmux local-tmux list` and close the old one with
+`cmux local-tmux close <name>`. A name with eight odd characters at the end comes from the clone's
+path, so a clone that you move gets a new session under a new name, and the old session stays until
+you close it.
+
+**A workspace was left open because it has other tabs.** `remove` closes a clone's cmux workspace
+only when it holds nothing but the terminal of the session and the todo pane. A second terminal, a
+browser and a `markdown` pane each count as another tab. Close the workspace in cmux when you are
+done with those tabs.
+
+**The session name ends with eight odd characters.** The folder name has a character that cmux
+does not accept in a session name, such as a `.`, a space or a letter with an accent, or the name
+is too long. draupnir changes it and adds `-` and eight characters from the hash of the clone's
+path, so two folders never share a name by accident. `draupnir attach` prints the exact name.
+
 **A clone cannot be removed after a squash merge.** Squashed commits get new content, so draupnir
 cannot see that they are merged. Use `draupnir remove --force`.
 

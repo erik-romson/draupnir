@@ -53,6 +53,30 @@ uv run --project [path to local checkout] draupnir init
 ```
 
 
+### A terminal for every clone
+
+`draupnir new` gives each clone a terminal session of its own, through `cmux local-tmux`. The
+session is named after the folders, such as `shop-feature-login`, and runs your login shell in the
+clone. It survives a cmux restart. `draupnir remove` closes it together with the clone.
+
+Inside cmux, `new` also opens a cmux workspace for the clone. It has the title of the IDE project,
+it shows the session, and it joins the sidebar group of the workspace that you ran `new` in. `new`
+does not switch to it. The `w` key of the dashboard goes to it. `--no-workspace` skips it for one
+clone, and `[cmux]` in `draupnir.toml` turns the session or the workspace off for good.
+
+To join the session from any other terminal, such as the console of an IDE, print the line that
+attaches to it:
+
+```
+draupnir attach                  # prints: cmux local-tmux attach shop-feature-login --headless
+eval "$(draupnir attach)"        # joins the session of the clone you are in
+```
+
+You can also paste the printed line. `draupnir attach` starts the session when the clone has none,
+for example after a reboot. Two terminals in one session share one window size, so the smaller
+one decides it. After cmux relaunches, `bin/cmux-resume` types the line into the clone's tab and
+brings the tab back. See [Restart the dashboards after cmux relaunches](#restart-the-dashboards-after-cmux-relaunches).
+
 ### The status in the cmux sidebar
 
 A dashboard that runs in cmux writes one line about its clones into the sidebar row of its own
@@ -115,8 +139,9 @@ bin/cmux-resume
 ```
 
 It prints one line for each saved command. `start` means that it typed the command into the tab.
-`busy` means that the tab already runs something, so the script left it alone. `missing` means that
-the tab is gone. The script never types into a tab that runs a program, and it leaves the agent
+`busy` means that the tab already runs something, so the script left it alone. A tab that runs a
+tmux client is always busy. `missing` means that the tab is gone. `gone` means that the folder of
+the saved command no longer exists, so the script typed nothing. The script never types into a tab that runs a program, and it leaves the agent
 sessions to cmux, which restarts those itself.
 
 | Option | What it does |
@@ -132,7 +157,8 @@ sessions to cmux, which restarts those itself.
 |---|---|
 | `draupnir`, `draupnir ui [branch]` | Start the dashboard |
 | `init [url] [--main-branch b]` | Write the workspace files and clone the project into `main/` |
-| `new <branch> [--base b] [--folder name] [--open]` | Create a clone next to `main/` |
+| `new <branch> [--base b] [--folder name] [--open] [--workspace\|--no-workspace]` | Create a clone next to `main/`, with its terminal session |
+| `attach [folder]` | Print the line that joins the clone's terminal session, and start the session when it has none |
 | `prepare [folder]` | Copy the local files and set up Maven again |
 | `status` | Print the state of every clone |
 | `fetch` | Fetch every clone |

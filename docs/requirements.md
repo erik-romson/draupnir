@@ -77,7 +77,7 @@ in the [user guide](guide.md#concepts).
   |---|---|
   | Fetch all / Refresh | Fetch every clone, or only read the state again |
   | Open IDE | Start the IDE in the clone |
-  | New cmux workspace | Open a cmux workspace with a shell in the clone. Only shown in cmux |
+  | cmux workspace | Go to the clone's own cmux workspace, or open it with the clone's terminal session as R27 says. Only shown in cmux |
   | Rebase on main | Refuse when tracked files are changed. Fetch, then rebase on `origin/<default>`. On a conflict, stop, leave the rebase in progress, list the files, and offer to open the IDE |
   | Push and follow build | Push the branch. Feature branches use `--force-with-lease --force-if-includes`. The default branch is never force-pushed. Then follow the build of the pushed commit |
   | Fast-forward main | Only when the branch is on top of `origin/<default>`. Push `HEAD` to the default branch without force. Then update `main/` |
@@ -112,6 +112,18 @@ in the [user guide](guide.md#concepts).
 - **R25.** The dashboard can open `draupnir.toml` in the user's own editor, and shows the file in
   the output when no editor is set. This is the one command that takes over the terminal, and it
   only runs when the user asks for it. R22 still holds for every command draupnir runs itself.
+
+### Terminals
+
+- **R26.** Each clone can have a terminal session, named from its folder. `new` starts it.
+  `attach` prints the line that joins it from any terminal, and starts the session when it is
+  missing.
+- **R27.** Inside cmux, `new` opens a workspace for the clone that shows the session, in the
+  caller's sidebar group, and `w` goes to it. The tab comes back after a cmux restart through
+  `bin/cmux-resume`.
+- **R28.** `remove` names the session in its question, and closes the session and the clone's
+  workspace with the clone. A failure, or a session or workspace that draupnir runs in, never
+  stops the removal.
 
 ## Things outside this tool
 

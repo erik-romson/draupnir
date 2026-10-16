@@ -4,7 +4,7 @@ draupnir is a terminal dashboard and a command line tool for working on several 
 repository. Read these first:
 
 - `docs/architecture.md`: modules, conventions, how commands run, and the tests.
-- `docs/requirements.md`: the requirements, R1 to R24.
+- `docs/requirements.md`: the requirements, R1 to R28.
 - `docs/decisions.md`: why the design is the way it is. Do not reopen a decision without a reason.
 
 ## Where the session runs

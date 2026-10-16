@@ -78,6 +78,17 @@ it exists on GitHub. Otherwise it creates the branch from the latest `origin/mai
 after the branch, for example `draupnir new feature/vessel-owner --folder owner`. `--open` starts IntelliJ IDEA for a Java project, Android Studio for an Android
 project and PyCharm for a Python project.
 
+**A terminal for the clone.** After it made the clone, `new` starts a terminal session for it
+through `cmux local-tmux`, named from the folders, such as `shop-feature-vessel-owner`. The session
+runs your login shell in the clone and survives a cmux restart. `draupnir attach` prints the line
+that joins it from any terminal, and starts the session when the clone has none. Inside cmux, `new`
+also opens a cmux workspace for the clone, with the title of the IDE project, that shows the
+session. It joins the sidebar group of your own workspace, and `new` does not switch to it.
+`--workspace` and `--no-workspace` override `clone-workspace` under `[cmux]` for one run. Outside
+cmux, `--workspace` prints a warning and `new` still succeeds. When the session fails, the clone
+is still ready, and `draupnir attach` tries again. `session = false` under `[cmux]` turns the
+session off for `new`.
+
 **Project names in the IDE.** Every clone of `shop` would otherwise show up in the IDE by its folder
 name, and `main` says little. So when draupnir opens a clone that the IDE has opened before, it
 names the project after the workspace and the folder, for example `shop main` or
@@ -118,8 +129,15 @@ either, draupnir asks on a terminal.
 **Remove a clone.** `draupnir remove` deletes the folder, with its `.m2repo` and local files. It
 refuses when the clone has uncommitted changes, a stash, or commits that are not on GitHub.
 Commits that GitHub rebase-merged count as saved. A squash merge made on GitHub does not, so use
-`--force` after one. After the checks, and before the delete, it closes the clone's terminal
-session. The question names that session, and any program that still runs in it.
+`--force` after one. The question names the clone's terminal session, how many clients it has, and
+any program that still runs in it. Claude Code shows as its version, such as `2.1.301`.
+
+After the checks, and before the delete, `remove` closes the clone's cmux workspace and then its
+session. It leaves a workspace open, and says so, when draupnir runs in that workspace or in the
+session, and when the workspace has a tab that draupnir did not make. Only the terminal with the
+attach line and the todo pane are draupnir's. Close the workspace in cmux yourself then. A session
+that belongs to another folder is never closed. A failure to close anything is logged and never
+stops the removal.
 
 **Claude Code.** Run `claude` inside a feature clone, so the session sees only that clone. draupnir
 never asks a question without a terminal. Pass `--yes` to `remove`, `ff-main` and `pr`.
@@ -164,11 +182,13 @@ output instead. draupnir reads the config again afterwards, and says so when the
 parses. Which buttons are shown, the default branch and the refresh time are read when the
 dashboard starts, so restart draupnir after you change them.
 
-**New cmux workspace.** When draupnir runs in a cmux terminal, this button opens a new cmux
-workspace with a shell in the selected clone and the cmux todo list below it, and switches to it.
-The workspace is called `<workspace> <folder>`, like the IDE project. When the dashboard's cmux
-workspace is in a sidebar group, the new workspace joins that group, right after the dashboard.
-Outside cmux the button is hidden.
+**cmux workspace.** When draupnir runs in a cmux terminal, this button goes to the selected
+clone's own cmux workspace. When the clone has none, it opens one that shows the clone's terminal
+session, with the cmux todo list below it, and switches to it. The workspace is called
+`<workspace> <folder>`, like the IDE project. When the dashboard's cmux workspace is in a sidebar
+group, the new workspace joins that group, right after the dashboard. With `session = false` under
+`[cmux]`, the button opens a plain workspace with a shell, as before. Outside cmux the button is
+hidden.
 
 | Key | Action |
 |---|---|
@@ -178,7 +198,7 @@ Outside cmux the button is hidden.
 | `c` | Edit `draupnir.toml` |
 | `o` | Open the IDE |
 | `g` | Open the build of the selected clone in the browser |
-| `w` | Open a cmux workspace in the selected clone, when draupnir runs in cmux |
+| `w` | Go to the cmux workspace of the selected clone, or open it, when draupnir runs in cmux |
 | `n` | New clone tab |
 | `p` | Projects tab |
 | `q` | Quit |

@@ -190,7 +190,8 @@ the dashboard. When the list fails, the workspace is still created, outside a gr
 workspace has no todo list, so draupnir opens it with `cmux todo open`. cmux opens it as a tab next
 to the terminal, so draupnir moves it into a pane below with `cmux split-off` and gives the terminal
 the focus back. When that fails, the workspace stays open without the todo list. The commands
-go through `runner.run` and ask nothing. draupnir reads only the JSON output.
+go through `runner.run` and ask nothing. draupnir reads only the JSON output. D55 changed what the
+button does when the clone has a workspace.
 
 **D51. One module for cmux, and a found command.** `cmux.py` holds everything that talks to
 cmux, so the dashboard and later tools share it and `ide.py` is only about the IDE. The tool is
@@ -200,8 +201,11 @@ variable from cmux, so a `cmux` that a test or a user put there still wins. Befo
 ran the bare name `cmux`, which only works inside a cmux terminal. Finding the tool does not make
 it usable everywhere: its socket answers `Access denied - only processes started inside cmux can
 connect` to a process that cmux did not start, unless a socket password is set. So every cmux
-command still needs a draupnir that runs inside cmux, and the found path only helps a terminal
-whose PATH does not hold the tool.
+command that goes through the socket still needs a draupnir that runs inside cmux. That covers the
+workspace, tree, surface, todo and status commands. The `local-tmux` commands `list`, `close`,
+`start --detached` and `attach --headless` do not use the socket, so they also work in a terminal
+that cmux did not start (D53). The found path only helps a terminal whose PATH does not hold the
+tool.
 
 **D52. The dashboard writes its state into the cmux sidebar.** After every status read, the
 dashboard writes one line into the sidebar row of its own cmux workspace, with
@@ -221,6 +225,80 @@ output, and `ui.cmux-status = false` turns it off for good. The line carries one
 cmux marks with icons of its own. The icon is the same at every level, because the colour already
 carries the level. It names a symbol of the system, and cmux does not check the name, so a name
 that does not exist simply draws nothing.
+
+**D53. A terminal session per clone through `cmux local-tmux`.** Every clone can have a terminal
+session that outlives a cmux restart, and `new` starts it. The session is named from the workspace
+folder and the clone folder, such as `shop-feature-login`, because cmux accepts only letters,
+digits, `_` and `-` in a session name. A letter, a digit, `_` and `-` stay, the one space between
+the two folders becomes `-`, `.` and `:` become `_` as tmux does, and every other character
+becomes `-`. A name that needed no change is used as it is. A name that had a character changed,
+dropped or cut, or that is longer than 128 characters, gets `-` and the first 8 hex characters of
+the SHA-256 of the clone's path, so `release-1.2.3` and `release-1_2_3` get different sessions.
+The path is normalized first, so a folder that macOS stores in another unicode form gets the
+same name. A hash on every name was rejected, because the common name stays readable without it.
+Two folders can still map to the same exact name, so a session is the clone's only when its name
+matches and its registered folder is the clone's folder. draupnir never starts, adopts or closes a
+session of another folder, and says so. It reads the session list from `local-tmux list --json`
+and matches the name exactly, never by prefix. Every field that decides what draupnir may do must
+be there with the right type. A missing field, or a `live` that is not a JSON boolean, makes the
+list unreadable, and an unreadable list never allows a close or a start. draupnir does not read
+the message of `local-tmux status`, because it is meant for people. A session that is registered
+but does not run is closed and started again. cmux 0.64.25 keeps such a record for good and
+refuses to start the name (cmux issue #17269, fixed in 0.65.1), and `close` removes the record.
+The session starts detached, with the user's login shell. It starts with draupnir's own
+environment, without the no-prompt variables of `runner.run`, because the first start after a boot
+starts the tmux server, which would hand `GIT_EDITOR=true` and `NO_COLOR=1` to every shell. It
+also starts without `VIRTUAL_ENV` and without that folder on `PATH`, so `uv run draupnir` does not
+leak its environment into the user's shell. The `local-tmux` commands that draupnir uses do not
+need the cmux socket (D51), so `draupnir attach` works in the console of an IDE. `attach` starts a
+session even with `session = false`, because the user asked for it. `new` and `remove` skip the
+session without a word when no cmux tool is installed.
+
+**D54. One attach line, with `--headless`.** The line is `cmux local-tmux attach <name>
+--headless`, built from the same tool that draupnir found (D51). It is what `draupnir attach`
+prints, the first command of the clone's cmux tab, and the command saved for the tab with
+`cmux surface resume set`. Without `--headless`, `attach` opens a tab through the cmux socket. A
+line that was typed into a restored shell then opened a second tab and left the first shell idle.
+With `--headless`, the same line works in any terminal. The saved command is stored as separate
+arguments, so no quoting can change it.
+
+**D55. A cmux workspace per clone.** Inside cmux, `new` opens a workspace for the clone. It has the
+title of the IDE project (D41), it shows the clone's session, and it joins the sidebar group of the
+caller's workspace (D46). Workspace titles are not unique, and an id that draupnir remembered
+could be stale. So draupnir finds the clone's workspace by its title and by the attach line that
+cmux saved for one of its terminals, with the clone's folder as the saved folder. It creates a
+workspace only when every read succeeded and none matched. A failed read says so and creates
+nothing, because the workspace may exist already, and a second press of `w` after a failed read
+must not make a second one. `new` opens the workspace without switching to it, from the command
+line and from the dashboard, because a clone that is made in the background must not take the
+screen. `w` goes to the workspace, and opens it first when it does not exist. With
+`session = false`, the workspace is the plain one that D46 describes, with no lookup and no saved
+command. `--workspace` and `--no-workspace` on `new` override `cmux.clone-workspace`. The flag
+outside cmux logs one line and `new` still exits 0. When `new` made a session but no workspace, it
+prints the attach line instead.
+
+**D56. What `remove` closes, and what it leaves open.** The question keeps its first line and comes
+before the fetch, as D32 says, and gains lines about the session. They say whether the session is
+open and how many clients it has, which programs still run in it, and that it is closed together
+with the clone. A program is named as tmux names it, so Claude Code shows as its version. After
+the checks pass, and before the folder is deleted, draupnir closes the clone's workspace and then
+its session. So a refused removal closes nothing, and the session is gone before the folder.
+A workspace stays open when draupnir runs in the clone's session, when draupnir runs in that very
+workspace, and when it holds a tab that draupnir did not make. The terminal that holds the attach
+line and the todo pane are draupnir's. Every other tab counts, whatever its type, so a notes pane
+or a browser keeps the workspace open, and the user closes it. A session that draupnir runs in
+stays open too, and the log says to type `exit` there. draupnir clears the saved resume command
+before it closes a workspace, so `bin/cmux-resume` does not bring it back. Closing is best effort.
+A failure, a missing tool or an unreadable list is logged and never stops the removal or changes
+its exit code. When the folder cannot be deleted after the session was closed, the error of the
+removal stands and the session stays closed. Reading the session and the processes in it has its
+own short timeout, so a slow tmux cannot hold up the question.
+
+**D57. Two guards in `bin/cmux-resume`.** A tab that runs a tmux client is never idle, whatever the
+process tree looks like. A tmux client, or a command line that contains `local-tmux attach`, is
+a live terminal, and typing a command into it would reach the user's shell inside the session. A
+saved command whose folder no longer exists is reported as `gone`. Nothing is typed for it, and
+`--open-missing` opens nothing for it, because the folder belongs to a clone that was removed.
 
 **D26. The dashboard refreshes on a timer.** Every `ui.refresh-seconds`. The timer never fetches,
 and skips a read while an action or another read runs.
@@ -275,4 +353,4 @@ itself, but a command saved with `cmux surface resume set` stays manual. Only a 
 window can make it restart on its own, and cmux signs that choice with a key in the Keychain. So
 `bin/cmux-resume` reads the saved commands from the cmux config and types each one into the
 terminals that cmux bound to it. It skips a terminal that runs something, and it matches terminals
-by their binding rather than by folder, because many shells share a folder.
+by their binding rather than by folder, because many shells share a folder. D57 added two guards.
