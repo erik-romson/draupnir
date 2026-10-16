@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -809,12 +810,23 @@ def check_removable(ws: Workspace, folder: Path) -> Path:
     return folder
 
 
-def remove_clone(ws: Workspace, folder: Path, force: bool, log: LogFn) -> None:
+def remove_clone(
+    ws: Workspace,
+    folder: Path,
+    force: bool,
+    log: LogFn,
+    before_delete: Callable[[], None] | None = None,
+) -> None:
     """Deletes a clone, with its .m2repo and local files, when no work would be lost (R7).
 
     Without force, it fetches first and refuses when unsaved_work finds anything. The message
     lists every reason. With force, it skips the fetch and the checks, but it still refuses
     main/, the workspace root, and folders that are not clones of the project.
+
+    before_delete, when given, is called after the checks passed and before the delete. The
+    callers close the clone's terminal there, so a program in it cannot write into the folder
+    while it is deleted. A removal that is refused never calls it. This module does not close
+    the terminal itself, because the cmux module imports this one.
     """
     folder = check_removable(ws, folder)
 
@@ -842,6 +854,8 @@ def remove_clone(ws: Workspace, folder: Path, force: bool, log: LogFn) -> None:
             raise OperationError("\n".join(lines))
         log(f"Nothing in {folder} is missing on GitHub.")
 
+    if before_delete is not None:
+        before_delete()
     log(f"Deleting {folder}. A large .m2repo can take a while.")
     try:
         shutil.rmtree(folder)

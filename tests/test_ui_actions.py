@@ -5,6 +5,7 @@ R25)."""
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 
 import pytest
 from conftest import Env
@@ -19,9 +20,13 @@ from helpers import (
     wait_until,
     write_executable,
     write_stub_cmux,
+    write_stub_tmux,
 )
+from textual.content import Content
+from textual.pilot import Pilot
+from textual.widgets import Static
 
-from draupnir.cmux import GREEN, YELLOW
+from draupnir.cmux import GREEN, YELLOW, session_name
 from draupnir.operations import push
 from draupnir.setup import new_clone, unsaved_work
 from draupnir.ui.app import DraupnirApp
@@ -43,6 +48,11 @@ def _output_lines(app: DraupnirApp) -> list[str]:
     return [strip.text.rstrip() for strip in app.output.log_view.lines]
 
 
+async def _wait_for_question(app: DraupnirApp, pilot: Pilot[None]) -> None:
+    """Waits for the remove question, which opens after a worker has read the session."""
+    await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen), "the remove question")
+
+
 async def test_ui_remove_asks_for_confirmation_and_deletes_the_clone(env: Env) -> None:
     _, log = logger()
     folder = new_clone(env.ws(), "feature/remove-me", None, log)
@@ -55,7 +65,7 @@ async def test_ui_remove_asks_for_confirmation_and_deletes_the_clone(env: Env) -
         await pilot.pause()
 
         await pilot.click("#remove")
-        await pilot.pause()
+        await _wait_for_question(app, pilot)
         assert isinstance(app.screen, ConfirmScreen)
         assert folder.exists()
 
@@ -80,7 +90,7 @@ async def test_ui_remove_deletes_a_clone_on_the_default_branch(env: Env) -> None
         assert not app.projects.buttons["remove"].disabled
 
         await pilot.click("#remove")
-        await pilot.pause()
+        await _wait_for_question(app, pilot)
         assert isinstance(app.screen, ConfirmScreen)
 
         await pilot.press("y")
@@ -106,7 +116,7 @@ async def test_ui_remove_answered_no_keeps_the_clone(env: Env) -> None:
         await pilot.pause()
 
         await pilot.click("#remove")
-        await pilot.pause()
+        await _wait_for_question(app, pilot)
         assert isinstance(app.screen, ConfirmScreen)
 
         await pilot.press("escape")
@@ -135,7 +145,7 @@ async def test_ui_remove_refusal_shows_every_reason(env: Env) -> None:
         await pilot.pause()
 
         await pilot.click("#remove")
-        await pilot.pause()
+        await _wait_for_question(app, pilot)
         await pilot.press("y")
         await settle(app, pilot)
 
@@ -147,6 +157,139 @@ async def test_ui_remove_refusal_shows_every_reason(env: Env) -> None:
         for reason in reasons:
             assert reason in text
         assert "--force" in text
+
+
+# ----- The remove question and the terminal session -----------------------------------------
+
+_UNREADABLE_NOTE = (
+    "draupnir could not read the terminal sessions, so it cannot say whether the clone has one."
+)
+
+
+def _running_session(folder: Path) -> dict[str, object]:
+    """An entry of cmux local-tmux list for the running session of the clone in folder."""
+    return {
+        "session_name": session_name(folder),
+        "cwd": str(folder.resolve()),
+        "live": True,
+        "socket_path": "/tmp/tmux-test/default",
+        "session_id": "$0",
+        "clients": 0,
+    }
+
+
+def _closes(calls: Path) -> list[list[str]]:
+    if not calls.exists():
+        return []
+    return [call for call in cmux_calls(calls) if call[:2] == ["local-tmux", "close"]]
+
+
+async def _ask_to_remove(app: DraupnirApp, pilot: Pilot[None], name: str) -> str:
+    """Presses Remove on the clone called name, and returns the question once it is shown."""
+    await settle(app, pilot)
+    _select(app, name)
+    await pilot.pause()
+    await pilot.click("#remove")
+    await _wait_for_question(app, pilot)
+    return _confirm_question(app)
+
+
+async def test_ui_remove_names_the_session_and_closes_it(env: Env) -> None:
+    folder = new_clone(env.ws(), "feature-a", None, logger()[1])
+    write_stub_tmux(env.bin)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_session(folder)]})
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        question = await _ask_to_remove(app, pilot, "feature-a")
+
+        assert question.startswith("Delete the folder feature-a?\n\n")
+        assert "Its terminal session shop-feature-a is open, with no client attached." in question
+        assert "The session is closed together with the clone." in question
+        assert folder.is_dir()
+        assert _closes(calls) == []
+
+        await pilot.press("y")
+        await settle(app, pilot)
+
+        assert not folder.exists()
+        assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+        assert "=== Done: Remove feature-a" in _output_lines(app)
+
+
+async def test_ui_remove_answered_no_keeps_the_session(env: Env) -> None:
+    folder = new_clone(env.ws(), "feature-a", None, logger()[1])
+    write_stub_tmux(env.bin)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_session(folder)]})
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await _ask_to_remove(app, pilot, "feature-a")
+        await pilot.press("escape")
+        await settle(app, pilot)
+
+        assert folder.is_dir()
+        assert _closes(calls) == []
+
+
+async def test_ui_remove_question_appears_when_the_sessions_cannot_be_read_in_time(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = new_clone(env.ws(), "feature-a", None, logger()[1])
+    write_stub_cmux(
+        env.bin, sessions={"sessions": [_running_session(folder)]}, slow=["local-tmux list"]
+    )
+    monkeypatch.setattr("draupnir.cmux.LOCAL_TMUX_READ_TIMEOUT_SECONDS", 0.2)
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        question = await _ask_to_remove(app, pilot, "feature-a")
+
+        assert question.startswith("Delete the folder feature-a?")
+        assert question.endswith(f"\n\n{_UNREADABLE_NOTE}")
+
+        await pilot.press("escape")
+        await settle(app, pilot)
+        assert folder.is_dir()
+
+
+async def test_ui_remove_question_shows_a_program_name_with_brackets_as_it_is(env: Env) -> None:
+    folder = new_clone(env.ws(), "feature-a", None, logger()[1])
+    write_stub_tmux(env.bin, "zsh\n[x]\n")
+    write_stub_cmux(env.bin, sessions={"sessions": [_running_session(folder)]})
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await _ask_to_remove(app, pilot, "feature-a")
+
+        shown = app.screen.query_one(Static).visual
+        assert isinstance(shown, Content)
+        assert "A program still runs in it: [x]." in shown.plain
+        assert "Its terminal session shop-feature-a is open" in shown.plain
+
+        await pilot.press("escape")
+        await settle(app, pilot)
+
+
+async def test_ui_remove_with_a_broken_cmux_command_still_asks_and_deletes(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = new_clone(env.ws(), "feature-a", None, logger()[1])
+    monkeypatch.setenv("DRAUPNIR_CMUX", '"broken')
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        question = await _ask_to_remove(app, pilot, "feature-a")
+
+        assert question.endswith(f"\n\n{_UNREADABLE_NOTE}")
+
+        await pilot.press("y")
+        await settle(app, pilot)
+
+        assert not folder.exists()
+        lines = _output_lines(app)
+        assert "=== Done: Remove feature-a" in lines
+        assert sum("could not read the cmux command" in line for line in lines) == 1
 
 
 def _make_rebase_conflict(env: Env, folder: str) -> None:

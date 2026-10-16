@@ -1,7 +1,8 @@
 """Talks to the cmux terminal: new workspaces, and the dashboard's status in its sidebar.
 
 It also names the terminal session of a clone, builds the line that attaches to it, and reads,
-starts and closes that session with cmux local-tmux.
+starts and closes that session with cmux local-tmux. It writes the lines about the session that
+the remove question shows.
 """
 
 from __future__ import annotations
@@ -716,6 +717,83 @@ def session_programs(session: TerminalSession) -> list[str] | None:
         if program and program not in shells and program not in programs:
             programs.append(program)
     return programs
+
+
+_UNREADABLE_NOTE = (
+    "draupnir could not read the terminal sessions, so it cannot say whether the clone has one."
+)
+
+
+def _ignore_log(_line: str) -> None:
+    """A log for the reads behind the remove question, which shows no command lines."""
+
+
+def _clients_part(clients: int | None) -> str:
+    if clients is None:
+        return ""
+    if clients == 0:
+        return ", with no client attached"
+    if clients == 1:
+        return ", with 1 client attached"
+    return f", with {clients} clients attached"
+
+
+def _note_lines(session: TerminalSession) -> list[str]:
+    if session.state in ("absent", "foreign"):
+        # The session of another folder is not the clone's, so the question does not name it.
+        return []
+    if session.state == "unreadable":
+        return [_UNREADABLE_NOTE]
+    if session.state == "stopped":
+        return [
+            f"Its terminal session {session.name} is registered, but it does not run. It is "
+            "removed together with the clone."
+        ]
+    lines = [f"Its terminal session {session.name} is open{_clients_part(session.clients)}."]
+    programs = session_programs(session)
+    if programs:
+        lines.append(f"A program still runs in it: {', '.join(programs)}.")
+    if runs_in_session(session):
+        lines.append("draupnir runs in this session, so the session stays open.")
+    else:
+        lines.append("The session is closed together with the clone.")
+    return lines
+
+
+def session_note(folder: Path) -> list[str]:
+    """The lines about the clone's terminal session that go under the remove question (rule C3).
+
+    It returns no lines without a cmux command line tool, when the clone has no session, and when
+    the session with the name belongs to another folder. It never raises (rule B1): what it
+    cannot read gives the line that says so, because the question must still be asked.
+    """
+    try:
+        if cmux_command() is None:
+            return []
+        return _note_lines(read_session(folder, _ignore_log))
+    # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
+    # draupnir, and the tests must see it. These three are what the outside world can cause: a
+    # cmux that refuses, a folder that went away, or output that does not parse.
+    except (OperationError, OSError, ValueError):
+        return [_UNREADABLE_NOTE]
+
+
+def close_clone_terminal(folder: Path, log: LogFn) -> None:
+    """Closes the terminal session of a clone before `remove` deletes it. It never raises (B1).
+
+    remove_clone calls it after the checks passed and before the delete, so a program in the
+    session cannot write into the folder while it goes. Without a cmux command line tool it says
+    nothing. What it cannot close is logged, and the removal goes on.
+    """
+    try:
+        if cmux_command() is None:
+            return
+        close_session(folder, log)
+    # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
+    # draupnir, and the tests must see it. These three are what the outside world can cause: a
+    # cmux that refuses, a folder that went away, or output that does not parse.
+    except (OperationError, OSError, ValueError) as exc:
+        log(_first_line(str(exc)))
 
 
 def _one_or_count(names: Sequence[str], one: str, many: str) -> list[str]:

@@ -101,14 +101,29 @@ def run_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _with_session_note(question: str, folder: Path) -> str:
+    """The question with the lines about the clone's terminal session under it (rule C3).
+
+    Each line is indented by two spaces, so confirm puts [y/N] after the last one. The caller
+    adds the lines only when the question is really asked on a terminal. So --yes reads no
+    session, and the error of confirm without a terminal keeps a first line that stands alone.
+    """
+    return "\n".join([question, *(f"  {line}" for line in cmux.session_note(folder))])
+
+
 def run_remove(args: argparse.Namespace) -> int:
     require_git()
     ws = Workspace.find(Path.cwd())
     folder = check_removable(ws, ws.resolve_folder(args.folder, Path.cwd()))
-    if not confirm(f"Delete {folder} with its .m2repo and local files?", args.yes):
+    question = f"Delete {folder} with its .m2repo and local files?"
+    if not args.yes and sys.stdin.isatty():
+        question = _with_session_note(question, folder)
+    if not confirm(question, args.yes):
         _log(f"Kept the clone {folder}. Nothing was deleted.")
         return 0
-    remove_clone(ws, folder, args.force, _log)
+    remove_clone(
+        ws, folder, args.force, _log, before_delete=lambda: cmux.close_clone_terminal(folder, _log)
+    )
     return 0
 
 
@@ -250,7 +265,8 @@ def _remove_after_merge(ws: Workspace, folder: Path, args: argparse.Namespace) -
 
     --remove removes it without a question, --keep keeps it. Without either, the command asks
     on a terminal. Without a terminal, or when offer-remove-after-merge is false, it keeps the
-    clone and prints the command that removes it. A removal always runs the safety checks.
+    clone and prints the command that removes it. A removal always runs the safety checks, and
+    it closes the clone's terminal session before the delete.
     """
     remove_command = f"draupnir remove {folder.name}"
     if args.keep:
@@ -260,10 +276,15 @@ def _remove_after_merge(ws: Workspace, folder: Path, args: argparse.Namespace) -
         if not ws.config.actions.offer_remove_after_merge or not sys.stdin.isatty():
             _log(f"Kept the clone {folder}. Remove it later with: {remove_command}")
             return
-        if not confirm(f"The branch is merged. Remove the clone {folder.name}?", False):
+        question = _with_session_note(
+            f"The branch is merged. Remove the clone {folder.name}?", folder
+        )
+        if not confirm(question, False):
             _log(f"Kept the clone {folder}. Remove it later with: {remove_command}")
             return
-    remove_clone(ws, folder, False, _log)
+    remove_clone(
+        ws, folder, False, _log, before_delete=lambda: cmux.close_clone_terminal(folder, _log)
+    )
 
 
 def run_pr(args: argparse.Namespace) -> int:

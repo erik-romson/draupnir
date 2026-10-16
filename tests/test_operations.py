@@ -11,14 +11,18 @@ from fake_gh import CHECK_RUNS, CheckRun, CommitStatus, Poll, running
 from helpers import (
     FakeStdin,
     append_config,
+    cmux_calls,
     commit,
     logger,
     push_from_other_clone,
     sh,
     write_executable,
+    write_stub_cmux,
+    write_stub_tmux,
 )
 
 from draupnir.cli import main
+from draupnir.cmux import session_name
 from draupnir.errors import OperationError, RebaseConflict
 from draupnir.github import SUCCESS, BuildState
 from draupnir.operations import (
@@ -852,6 +856,65 @@ def test_pr_command_with_remove_deletes_the_clone_after_the_merge(
     assert sh(env.remote, "git", "show", "main:feature.txt") == "work on feature/pr-cli-remove"
     assert "is merged." in captured.out
     assert f"Deleted {folder}" in captured.out
+
+
+def _running_session(folder: Path) -> dict[str, object]:
+    """An entry of cmux local-tmux list for the running session of the clone in folder."""
+    return {
+        "session_name": session_name(folder),
+        "cwd": str(folder.resolve()),
+        "live": True,
+        "socket_path": "/tmp/tmux-test/default",
+        "session_id": "$0",
+        "clients": 0,
+    }
+
+
+def test_pr_command_with_remove_closes_the_session_of_the_clone(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder, sha = _feature_clone(env, "feature/pr-cli-session")
+    _green(env, sha)
+    name = session_name(folder)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_session(folder)]})
+    monkeypatch.chdir(folder)
+    monkeypatch.setattr(sys, "stdin", FakeStdin(is_a_tty=True))
+
+    code = main(["pr", "--yes", "--remove"])
+
+    assert code == 0, capsys.readouterr().err
+    assert not folder.exists()
+    assert ["local-tmux", "close", name] in cmux_calls(calls)
+
+
+def test_pr_command_names_the_session_when_it_asks_to_remove_the_clone(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder, sha = _feature_clone(env, "feature/pr-cli-ask")
+    _green(env, sha)
+    name = session_name(folder)
+    write_stub_tmux(env.bin)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_session(folder)]})
+    monkeypatch.chdir(folder)
+    monkeypatch.setattr(sys, "stdin", FakeStdin(is_a_tty=True))
+    questions: list[str] = []
+
+    def answer_yes(prompt: str = "") -> str:
+        questions.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", answer_yes)
+
+    code = main(["pr", "--yes"])
+
+    assert code == 0, capsys.readouterr().err
+    assert questions == [
+        f"The branch is merged. Remove the clone {folder.name}?\n"
+        f"  Its terminal session {name} is open, with no client attached.\n"
+        "  The session is closed together with the clone. [y/N] "
+    ]
+    assert not folder.exists()
+    assert ["local-tmux", "close", name] in cmux_calls(calls)
 
 
 def test_pr_command_without_a_terminal_keeps_the_clone_and_prints_the_command(

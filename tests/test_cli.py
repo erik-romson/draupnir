@@ -16,6 +16,7 @@ from helpers import (
     sh,
     write_executable,
     write_stub_cmux,
+    write_stub_tmux,
 )
 
 from draupnir import __version__
@@ -550,6 +551,219 @@ def test_new_survives_an_oserror_while_it_reads_the_sessions(
     assert code == 0
     assert (env.root / "feature-a").is_dir()
     assert out.count("the folder went away") == 1
+
+
+# ----- draupnir remove and the terminal session ----------------------------------------------
+
+_UNREADABLE_NOTE = (
+    "draupnir could not read the terminal sessions, so it cannot say whether the clone has one."
+)
+
+
+def _closes(calls: Path) -> list[list[str]]:
+    if not calls.exists():
+        return []
+    return [call for call in cmux_calls(calls) if call[:2] == ["local-tmux", "close"]]
+
+
+def _answer_on_a_terminal(monkeypatch: pytest.MonkeyPatch, answer: str) -> list[str]:
+    """Makes standard input a terminal that gives answer to every question.
+
+    Returns the list that collects the questions.
+    """
+    monkeypatch.setattr(sys, "stdin", FakeStdin(is_a_tty=True))
+    questions: list[str] = []
+
+    def reply(prompt: str = "") -> str:
+        questions.append(prompt)
+        return answer
+
+    monkeypatch.setattr("builtins.input", reply)
+    return questions
+
+
+def _remove_question(clone: Path, *lines: str) -> str:
+    """The prompt of draupnir remove, with lines under the first line."""
+    first = f"Delete {clone} with its .m2repo and local files?"
+    return "\n".join([first, *(f"  {line}" for line in lines)]) + " [y/N] "
+
+
+def test_remove_names_the_session_and_its_program_in_the_question(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_tmux(env.bin, "zsh\n2.1.301\n")
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone, clients=1)]})
+    questions = _answer_on_a_terminal(monkeypatch, "n")
+
+    code = main(["-C", str(env.root), "remove", "feature-a"])
+
+    assert code == 0
+    assert questions == [
+        _remove_question(
+            clone,
+            "Its terminal session shop-feature-a is open, with 1 client attached.",
+            "A program still runs in it: 2.1.301.",
+            "The session is closed together with the clone.",
+        )
+    ]
+    assert clone.is_dir()
+    assert _closes(calls) == []
+
+
+def test_remove_yes_closes_the_session_and_deletes_the_clone(env: Env) -> None:
+    clone = _attach_clone(env)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    assert code == 0
+    assert not clone.exists()
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+
+
+def test_remove_that_is_refused_keeps_the_session(env: Env) -> None:
+    clone = _attach_clone(env)
+    (clone / "notes.txt").write_text("not committed\n")
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    assert code == 1
+    assert clone.is_dir()
+    assert _closes(calls) == []
+
+
+def test_remove_force_closes_the_session_before_the_delete(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    (clone / "notes.txt").write_text("not committed\n")
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+    real_rmtree = shutil.rmtree
+
+    def logged_rmtree(path: Path) -> None:
+        with calls.open("a") as handle:
+            handle.write("rmtree\n")
+        real_rmtree(path)
+
+    monkeypatch.setattr(shutil, "rmtree", logged_rmtree)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes", "--force"])
+
+    assert code == 0
+    assert not clone.exists()
+    assert cmux_calls(calls)[-2:] == [["local-tmux", "close", "shop-feature-a"], ["rmtree"]]
+
+
+def test_remove_deletes_the_clone_when_the_session_cannot_be_closed(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_cmux(
+        env.bin, sessions={"sessions": [_running_entry(clone)]}, fail=["local-tmux close"]
+    )
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert not clone.exists()
+    assert out.count("draupnir could not close the terminal session shop-feature-a.") == 1
+
+
+def test_remove_leaves_the_session_of_another_folder_alone(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    other = env.tmp / "elsewhere" / "feature-a"
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone, cwd=str(other))]})
+    questions = _answer_on_a_terminal(monkeypatch, "y")
+
+    code = main(["-C", str(env.root), "remove", "feature-a"])
+
+    assert code == 0
+    assert questions == [_remove_question(clone)]
+    assert not clone.exists()
+    assert _closes(calls) == []
+
+
+def test_remove_leaves_open_the_session_that_draupnir_runs_in(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_tmux(env.bin)
+    entry = _running_entry(clone)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [entry]})
+    monkeypatch.setenv("TMUX", f"{entry['socket_path']},4242,0")
+    questions = _answer_on_a_terminal(monkeypatch, "y")
+
+    code = main(["-C", str(env.root), "remove", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert questions == [
+        _remove_question(
+            clone,
+            "Its terminal session shop-feature-a is open, with no client attached.",
+            "draupnir runs in this session, so the session stays open.",
+        )
+    ]
+    assert not clone.exists()
+    assert _closes(calls) == []
+    assert "Type exit" in out
+
+
+def test_remove_with_a_broken_cmux_command_still_asks_and_deletes(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    monkeypatch.setenv("DRAUPNIR_CMUX", '"broken')
+    questions = _answer_on_a_terminal(monkeypatch, "y")
+
+    code = main(["-C", str(env.root), "remove", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert questions == [_remove_question(clone, _UNREADABLE_NOTE)]
+    assert not clone.exists()
+    assert out.count("could not read the cmux command") == 1
+
+
+def test_remove_with_an_entry_without_live_closes_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    entry = _running_entry(clone)
+    del entry["live"]
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [entry]})
+    questions = _answer_on_a_terminal(monkeypatch, "n")
+
+    assert main(["-C", str(env.root), "remove", "feature-a"]) == 0
+    assert questions == [_remove_question(clone, _UNREADABLE_NOTE)]
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    assert code == 0
+    assert not clone.exists()
+    assert _closes(calls) == []
+
+
+def test_remove_survives_an_oserror_while_it_reads_the_sessions(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+
+    def broken(_a: object, _b: object) -> bool:
+        raise OSError("the folder went away")
+
+    monkeypatch.setattr("draupnir.cmux.same_folder", broken)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    assert code == 0
+    assert not clone.exists()
 
 
 def test_new_parser_reads_the_workspace_flag() -> None:

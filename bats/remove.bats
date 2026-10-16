@@ -16,6 +16,17 @@ setup() {
     run draupnir new feature-a
     assert_success
     CLONE="$ROOT/feature-a"
+    # new starts a session through the stub cmux. The tests here look at the calls of remove only.
+    rm -f "$BATS_CMUX_LOG"
+}
+
+# How many times the stub cmux got a local-tmux close.
+close_count() {
+    if [ -f "$BATS_CMUX_LOG" ]; then
+        grep -c "^local-tmux	close	" "$BATS_CMUX_LOG" || true
+    else
+        echo 0
+    fi
 }
 
 @test "remove deletes a clone with its private Maven repository and its local files" {
@@ -108,4 +119,36 @@ setup() {
     assert_output --partial "--yes"
 
     assert_dir_exist "$CLONE"
+}
+
+@test "remove --yes closes the session of the clone" {
+    cmux_session shop-feature-a "$(cd "$CLONE" && pwd -P)"
+
+    run draupnir remove --yes feature-a
+    assert_success
+
+    assert_dir_not_exist "$CLONE"
+    run grep -Fx "local-tmux	close	shop-feature-a	" "$BATS_CMUX_LOG"
+    assert_success
+}
+
+@test "a refused removal keeps the session" {
+    cmux_session shop-feature-a "$(cd "$CLONE" && pwd -P)"
+    change_fixture "$CLONE" edits/name-from-branch
+
+    run draupnir remove --yes feature-a
+    assert_failure
+
+    assert_dir_exist "$CLONE"
+    assert_equal "$(close_count)" 0
+}
+
+@test "remove leaves another folder's session alone" {
+    cmux_session shop-feature-a /elsewhere
+
+    run draupnir remove --yes feature-a
+    assert_success
+
+    assert_dir_not_exist "$CLONE"
+    assert_equal "$(close_count)" 0
 }

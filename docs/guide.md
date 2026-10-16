@@ -118,7 +118,8 @@ either, draupnir asks on a terminal.
 **Remove a clone.** `draupnir remove` deletes the folder, with its `.m2repo` and local files. It
 refuses when the clone has uncommitted changes, a stash, or commits that are not on GitHub.
 Commits that GitHub rebase-merged count as saved. A squash merge made on GitHub does not, so use
-`--force` after one.
+`--force` after one. After the checks, and before the delete, it closes the clone's terminal
+session. The question names that session, and any program that still runs in it.
 
 **Claude Code.** Run `claude` inside a feature clone, so the session sees only that clone. draupnir
 never asks a question without a terminal. Pass `--yes` to `remove`, `ff-main` and `pr`.

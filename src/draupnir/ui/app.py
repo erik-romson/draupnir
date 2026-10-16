@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -18,9 +19,11 @@ from textual.widgets import Footer, Header, TabbedContent, TabPane
 from draupnir.cmux import (
     SidebarStatus,
     clear_sidebar_status,
+    close_clone_terminal,
     in_cmux,
     open_clone_terminal,
     open_cmux_workspace,
+    session_note,
     set_sidebar_status,
     sidebar_status,
 )
@@ -52,6 +55,7 @@ from draupnir.workspace import Workspace
 # state that is cancelled means the user pressed "Stop waiting".
 Operation = Callable[[LogFn, threading.Event], object]
 ConflictCallback = Callable[[list[str]], None]
+AnswerCallback = Callable[[bool | None], None]
 BuildCallback = Callable[[BuildState], None]
 SuccessCallback = Callable[[object], None]
 
@@ -814,28 +818,51 @@ class DraupnirApp(App[None]):
             if yes:
                 self._start_removal(folder, name)
 
-        self.push_screen(
-            ConfirmScreen(
-                f"The branch is merged. Remove the clone {name}?\n\n"
-                "draupnir still refuses when the clone has work that is not on GitHub."
-            ),
+        self._ask_about_removal(
+            f"The branch is merged. Remove the clone {name}?\n\n"
+            "draupnir still refuses when the clone has work that is not on GitHub.",
+            folder,
             answered,
         )
 
+    @work(thread=True, group="remove-question", exit_on_error=False)
+    def _ask_about_removal(self, question: str, folder: Path, answered: AnswerCallback) -> None:
+        """Asks question about the removal of folder, with the lines about its terminal session.
+
+        The lines come from cmux, which can be slow, so they are read in this worker thread. The
+        dialog opens when they are read. session_note never raises, so the dialog always opens.
+        """
+        lines = session_note(folder)
+        self._call_ui(self._show_removal_question, question, lines, answered)
+
+    def _show_removal_question(
+        self, question: str, lines: list[str], answered: AnswerCallback
+    ) -> None:
+        if lines:
+            # ConfirmScreen shows markup, and a program name such as [x] must show as it is.
+            question += "\n\n" + "\n".join(escape(line) for line in lines)
+        self.push_screen(ConfirmScreen(question), answered)
+
     def _start_removal(self, folder: Path, name: str) -> None:
-        """Removes folder as a new action, with every safety check and without force (R7)."""
+        """Removes folder as a new action, with every safety check and without force (R7).
+
+        The clone's terminal session is closed after the checks passed and before the delete.
+        """
         ws = self.ws
 
         def operation(log: LogFn, _cancel: threading.Event) -> None:
-            remove_clone(ws, folder, False, log)
+            remove_clone(
+                ws, folder, False, log, before_delete=lambda: close_clone_terminal(folder, log)
+            )
 
         self.start(f"Remove {name}", operation)
 
     def action_remove(self) -> None:
         """Asks for confirmation, then removes the selected clone (R7, R18).
 
-        The dashboard never forces a removal. Use `draupnir remove --force` on the command
-        line to delete a clone that has work that is not on GitHub.
+        The question also says what the clone's terminal session holds, and that the removal
+        closes it. The dashboard never forces a removal. Use `draupnir remove --force` on the
+        command line to delete a clone that has work that is not on GitHub.
         """
         selected = self.projects.selected_status()
         if selected is None:
@@ -847,12 +874,11 @@ class DraupnirApp(App[None]):
             if yes:
                 self._start_removal(folder, name)
 
-        self.push_screen(
-            ConfirmScreen(
-                f"Delete the folder {name}?\n\n"
-                "This also deletes its .m2repo and the local files that were copied into "
-                "it. draupnir refuses when the clone has work that is not on GitHub. Use "
-                "draupnir remove --force on the command line to delete it anyway."
-            ),
+        self._ask_about_removal(
+            f"Delete the folder {name}?\n\n"
+            "This also deletes its .m2repo and the local files that were copied into "
+            "it. draupnir refuses when the clone has work that is not on GitHub. Use "
+            "draupnir remove --force on the command line to delete it anyway.",
+            folder,
             confirmed,
         )
