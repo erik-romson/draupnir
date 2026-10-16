@@ -1,6 +1,7 @@
 """Talks to the cmux terminal: new workspaces, and the dashboard's status in its sidebar.
 
-It also names the terminal session of a clone, and builds the line that attaches to it.
+It also names the terminal session of a clone, builds the line that attaches to it, and reads,
+starts and closes that session with cmux local-tmux.
 """
 
 from __future__ import annotations
@@ -14,12 +15,19 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from draupnir.errors import OperationError
 from draupnir.github import FAILURE, BuildState
 from draupnir.ide import project_name
-from draupnir.runner import CMUX_TIMEOUT_SECONDS, LogFn, Result, run
+from draupnir.runner import (
+    CMUX_TIMEOUT_SECONDS,
+    LOCAL_TMUX_READ_TIMEOUT_SECONDS,
+    CommandError,
+    LogFn,
+    Result,
+    run,
+)
 from draupnir.status import ProjectStatus
 
 # cmux sets this variable in every terminal it starts.
@@ -206,17 +214,27 @@ def in_cmux() -> bool:
     return bool(os.environ.get(_CMUX_VARIABLE))
 
 
-def _cmux_json(args: list[str | Path], folder: Path, log: LogFn) -> dict[str, object]:
+def _cmux_json(
+    args: list[str | Path],
+    folder: Path,
+    log: LogFn,
+    *,
+    id_format: bool = True,
+    timeout: float = CMUX_TIMEOUT_SECONDS,
+) -> dict[str, object]:
     """Runs a cmux command that answers with JSON, and returns the object it prints.
 
-    The command line goes to log. The JSON is read from stdout alone, because cmux prints
-    notices on stderr.
+    The command gets --json, and with id_format also --id-format both, so the answer holds both
+    the ids and the refs. With id_format false it gets only --json, for a command whose plain
+    answer draupnir reads, such as cmux local-tmux list. The command line goes to log. The JSON
+    is read from stdout alone, because cmux prints notices on stderr.
 
     Raises OperationError when the command fails or does not print a JSON object.
     """
-    command = _argv([*args, "--json", "--id-format", "both"])
+    flags = ["--json", "--id-format", "both"] if id_format else ["--json"]
+    command = _argv([*args, *flags])
     log(f"$ {shlex.join(command)}")
-    result = run(command, folder, timeout=CMUX_TIMEOUT_SECONDS)
+    result = run(command, folder, timeout=timeout)
     try:
         parsed: object = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -316,6 +334,350 @@ def open_cmux_workspace(folder: Path, log: LogFn) -> None:
             "The workspace is open, but draupnir could not add the todo list below the "
             f"terminal: {str(exc).splitlines()[0]}"
         )
+
+
+# ----- The terminal session of a clone ------------------------------------------------------
+
+# What cmux local-tmux list says about the session of a clone.
+SessionState = Literal["absent", "running", "stopped", "foreign", "unreadable"]
+
+_LIST_COMMAND = "cmux local-tmux list --json"
+
+# tmux sets this variable in every pane it runs, as <socket>,<pid>,<session number>.
+_TMUX_VARIABLE = "TMUX"
+
+# Where cmux local-tmux finds its tmux, when it is not the tmux on the PATH.
+_TMUX_COMMAND_VARIABLE = "CMUX_LOCAL_TMUX_BIN"
+
+# A pane that runs one of these runs only a shell, so the remove question does not name it. The
+# basename of SHELL counts too.
+_SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "login"})
+
+_UNREADABLE_SESSIONS = (
+    "draupnir could not read the terminal sessions with cmux local-tmux list --json. Check "
+    "that cmux is up to date and that tmux is installed."
+)
+
+
+@dataclass(frozen=True)
+class TerminalSession:
+    """What cmux local-tmux list --json says about the terminal session of a clone.
+
+    The state is one of:
+
+    - absent: no session has the name;
+    - running: the clone's own session, and it runs;
+    - stopped: the clone's own session, which cmux knows but which does not run;
+    - foreign: a session with the name whose cwd is another folder;
+    - unreadable: the list could not be read, or its entry for the name is not as expected.
+
+    A session that read_session found running always has socket_path and session_id. A session
+    that ensure_session has just started has neither, because it is not read again. clients is
+    None when the list gives no count. failure holds the first line of what went wrong when the
+    state is unreadable.
+    """
+
+    name: str
+    state: SessionState
+    cwd: str | None = None
+    socket_path: str | None = None
+    session_id: str | None = None
+    clients: int | None = None
+    failure: str | None = None
+
+
+def _first_line(text: str) -> str:
+    stripped = text.strip()
+    return stripped.splitlines()[0] if stripped else ""
+
+
+def _unreadable(name: str, failure: str) -> TerminalSession:
+    return TerminalSession(name=name, state="unreadable", failure=failure)
+
+
+def _unusable_field(name: str, field: str) -> str:
+    return f"The entry of {name} in {_LIST_COMMAND} has no {field} that draupnir can use."
+
+
+def read_session(folder: Path, log: LogFn) -> TerminalSession:
+    """Reads the state of the terminal session of the clone in folder.
+
+    It runs cmux local-tmux list --json in the workspace root, with a short timeout, because
+    the remove question waits for it. A command that fails, times out or prints something else
+    than a list of sessions gives unreadable. So does an entry for the name whose fields are
+    missing or have another type: every field that decides whether draupnir may close or start
+    the session must be there, so a missing field never allows either.
+
+    Raises OperationError only when the cmux command line tool is not installed, or when
+    DRAUPNIR_CMUX cannot be read. Those two keep their own messages, because they say what to
+    fix.
+    """
+    name = session_name(folder)
+    # A missing cmux and a DRAUPNIR_CMUX that cannot be split raise here, before the try, so
+    # they do not turn into an unreadable list.
+    _argv([])
+    try:
+        listed = _cmux_json(
+            ["local-tmux", "list"],
+            folder.parent,
+            log,
+            id_format=False,
+            timeout=LOCAL_TMUX_READ_TIMEOUT_SECONDS,
+        )
+    except OperationError as exc:
+        return _unreadable(name, _first_line(str(exc)))
+    sessions = listed.get("sessions")
+    if not isinstance(sessions, list):
+        return _unreadable(name, f"{_LIST_COMMAND} printed no list of sessions.")
+
+    # The name is compared exactly. A prefix would let shop-feat find the session shop-feat-2.
+    matching: list[dict[str, object]] = []
+    for entry in cast("list[object]", sessions):
+        if isinstance(entry, dict):
+            fields = cast("dict[str, object]", entry)
+            if fields.get("session_name") == name:
+                matching.append(fields)
+    if not matching:
+        return TerminalSession(name=name, state="absent")
+    if len(matching) > 1:
+        return _unreadable(name, f"{_LIST_COMMAND} lists the session {name} more than once.")
+    entry = matching[0]
+
+    cwd = entry.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return _unreadable(name, _unusable_field(name, "cwd"))
+    if not same_folder(cwd, folder):
+        return TerminalSession(name=name, state="foreign", cwd=cwd)
+    # Only a JSON boolean counts. "true", 1 or null could be a change in cmux, and draupnir must
+    # not guess whether the session runs.
+    live = entry.get("live")
+    if not isinstance(live, bool):
+        return _unreadable(name, _unusable_field(name, "live"))
+    socket_path = _text(entry, "socket_path")
+    session_id = _text(entry, "session_id")
+    clients = entry.get("clients")
+    count = clients if isinstance(clients, int) and not isinstance(clients, bool) else None
+    if not live:
+        return TerminalSession(
+            name=name,
+            state="stopped",
+            cwd=cwd,
+            socket_path=socket_path,
+            session_id=session_id,
+            clients=count,
+        )
+    # Without the socket and the id, draupnir cannot tell whether it runs inside the session,
+    # and it must not close the session it runs in.
+    if socket_path is None:
+        return _unreadable(name, _unusable_field(name, "socket_path"))
+    if session_id is None:
+        return _unreadable(name, _unusable_field(name, "session_id"))
+    return TerminalSession(
+        name=name,
+        state="running",
+        cwd=cwd,
+        socket_path=socket_path,
+        session_id=session_id,
+        clients=count,
+    )
+
+
+def session_environment() -> dict[str, str]:
+    """The environment a new terminal session starts with.
+
+    It is the environment of draupnir without VIRTUAL_ENV, and without the bin folder of that
+    virtual environment on the PATH. `uv run draupnir` sets both. A tmux server takes its global
+    environment from the process that starts it, so the first session after a boot would hand
+    them to every pane of every session. The CMUX_ variables stay. Passed as env to run, it also
+    keeps out the variables that run adds to keep git from asking questions.
+    """
+    environment = dict(os.environ)
+    venv = environment.pop("VIRTUAL_ENV", None)
+    path = environment.get("PATH")
+    if venv and path is not None:
+        venv_bin = os.path.normpath(os.path.join(venv, "bin"))
+        environment["PATH"] = os.pathsep.join(
+            entry
+            for entry in path.split(os.pathsep)
+            if not entry or os.path.normpath(entry) != venv_bin
+        )
+    return environment
+
+
+def _run_cmux(
+    args: list[str | Path], cwd: Path, log: LogFn, *, env: Mapping[str, str] | None = None
+) -> Result:
+    """Runs a cmux command after its command line went to log.
+
+    Raises CommandError when the command fails or runs too long.
+    """
+    command = _argv(args)
+    log(f"$ {shlex.join(command)}")
+    return run(command, cwd, timeout=CMUX_TIMEOUT_SECONDS, env=env)
+
+
+def ensure_session(folder: Path, log: LogFn) -> TerminalSession:
+    """Makes sure that the clone in folder has a terminal session that runs, and returns it.
+
+    A session that runs is used as it is. A missing session is started in the clone folder,
+    with the user's login shell. A session that cmux knows but that does not run is closed, and
+    then started again. The command lines go to log.
+
+    Raises OperationError when the name belongs to the session of another folder, when the
+    sessions cannot be read, or when the session cannot be started.
+    """
+    session = read_session(folder, log)
+    if session.state == "running":
+        return session
+    if session.state == "foreign":
+        raise OperationError(
+            f"The terminal session {session.name} belongs to {session.cwd}, so draupnir did not "
+            f"use it for {folder}. Close it with cmux local-tmux close {session.name} when it "
+            "is no longer needed, or give the clone another folder name."
+        )
+    if session.state == "unreadable":
+        # The first line makes sense alone. The failure follows for the output of the command.
+        lines = [_UNREADABLE_SESSIONS]
+        if session.failure:
+            lines.append(session.failure)
+        raise OperationError("\n".join(lines))
+
+    resolved = folder.resolve()
+    try:
+        if session.state == "stopped":
+            # cmux 0.64.25 keeps the record of a session whose tmux session died, and that record
+            # blocks the name for good (cmux issue #17269, fixed in 0.65.1). Closing the record
+            # frees the name for the start below.
+            _run_cmux(["local-tmux", "close", session.name], folder.parent, log)
+        # --detached starts the session without a tab. Without it, start attaches a tab.
+        _run_cmux(
+            ["local-tmux", "start", session.name, "--cwd", resolved, "--detached"],
+            folder.parent,
+            log,
+            env=session_environment(),
+        )
+    except CommandError as exc:
+        raise OperationError(
+            f"draupnir could not start the terminal session {session.name} for "
+            f"{folder.name}.\n{exc}"
+        ) from exc
+    return TerminalSession(name=session.name, state="running", cwd=str(resolved))
+
+
+def runs_in_session(session: TerminalSession) -> bool:
+    """True when draupnir runs in a pane of session.
+
+    tmux sets TMUX to <socket>,<pid>,<n> in every pane, and $<n> is the id of the session. A
+    session without a socket path or an id never matches.
+    """
+    if session.socket_path is None or session.session_id is None:
+        return False
+    # The socket path may hold a comma, so the two numbers are split off from the right.
+    parts = os.environ.get(_TMUX_VARIABLE, "").rsplit(",", 2)
+    if len(parts) != 3:
+        return False
+    socket, _pid, number = parts
+    return socket == session.socket_path and f"${number}" == session.session_id
+
+
+def close_session(folder: Path, log: LogFn) -> None:
+    """Closes the terminal session of the clone in folder, and logs what it could not close.
+
+    It leaves alone the session of another folder, and the session that draupnir runs in. The
+    commands run in the workspace root, because the clone folder is about to go. It never raises
+    an OperationError: a session that stays open must not stop the removal of the clone.
+    """
+    try:
+        _close_session(folder, log)
+    except OperationError as exc:
+        log(_first_line(str(exc)))
+
+
+def _close_session(folder: Path, log: LogFn) -> None:
+    session = read_session(folder, log)
+    if session.state == "absent":
+        return
+    if session.state == "foreign":
+        log(
+            f"The terminal session {session.name} belongs to {session.cwd}, so draupnir left it "
+            "open."
+        )
+        return
+    if session.state == "unreadable":
+        log(
+            "draupnir could not read the terminal sessions, so it did not close one. Check "
+            "with cmux local-tmux list."
+        )
+        if session.failure:
+            log(session.failure)
+        return
+    if runs_in_session(session):
+        log(
+            f"draupnir runs in the terminal session {session.name}, so it left the session "
+            "open. Type exit there to close it."
+        )
+        return
+    try:
+        _run_cmux(["local-tmux", "close", session.name], folder.parent, log)
+    except CommandError as exc:
+        failure = _first_line(exc.output) or _first_line(str(exc))
+    else:
+        return
+    # A close that failed may still have closed the session, so the list decides.
+    if read_session(folder, log).state == "absent":
+        return
+    log(
+        f"draupnir could not close the terminal session {session.name}. Close it with cmux "
+        f"local-tmux close {session.name}."
+    )
+    log(failure)
+
+
+def session_programs(session: TerminalSession) -> list[str] | None:
+    """The programs that run in the panes of session, other than shells, or None when unknown.
+
+    The names are those that tmux gives (#{pane_current_command}), in their order and without
+    duplicates. Some programs show as their version number, such as 2.1.301. No tmux, a tmux
+    that fails and a tmux that runs too long all give None, so a session is never called idle
+    by mistake.
+    """
+    if session.socket_path is None or session.cwd is None:
+        return None
+    tmux = os.environ.get(_TMUX_COMMAND_VARIABLE) or shutil.which("tmux")
+    if not tmux:
+        return None
+    command = [
+        tmux,
+        "-S",
+        session.socket_path,
+        "list-panes",
+        "-s",
+        # tmux matches a bare session name by prefix. The = asks for exactly this session.
+        "-t",
+        f"={session.name}",
+        "-F",
+        "#{pane_current_command}",
+    ]
+    try:
+        # The parent of the clone folder is the workspace root, which stays when the clone goes.
+        result = run(
+            command,
+            Path(session.cwd).parent,
+            check=False,
+            timeout=LOCAL_TMUX_READ_TIMEOUT_SECONDS,
+        )
+    except CommandError:
+        return None
+    if result.code != 0:
+        return None
+    shells = _SHELLS | {os.path.basename(os.environ.get("SHELL", ""))}
+    programs: list[str] = []
+    for line in result.stdout.splitlines():
+        # A login shell shows with a leading -, such as -zsh.
+        program = line.strip().removeprefix("-")
+        if program and program not in shells and program not in programs:
+            programs.append(program)
+    return programs
 
 
 def _one_or_count(names: Sequence[str], one: str, many: str) -> list[str]:
