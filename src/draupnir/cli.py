@@ -87,6 +87,7 @@ def run_new(args: argparse.Namespace) -> int:
     ws = Workspace.find(Path.cwd())
     folder = new_clone(ws, args.branch, args.base, _log, args.folder)
     _log(f"{folder} is ready.")
+    cmux.open_clone_terminal(folder, ws.config.cmux, args.workspace, _log)
     if args.open:
         command = open_ide(folder, ws.config)
         _log(f"Starting the IDE: {command}")
@@ -359,6 +360,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="folder name for the new clone. Default: the branch name with / replaced by -",
     )
     new_parser.add_argument("--open", action="store_true", help="start the IDE in the new clone")
+    new_parser.add_argument(
+        "--workspace",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="open a cmux workspace for the clone. Default: [cmux] clone-workspace",
+    )
     new_parser.set_defaults(func=run_new)
 
     prepare_parser = add_command(

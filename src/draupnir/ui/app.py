@@ -19,6 +19,7 @@ from draupnir.cmux import (
     SidebarStatus,
     clear_sidebar_status,
     in_cmux,
+    open_clone_terminal,
     open_cmux_workspace,
     set_sidebar_status,
     sidebar_status,
@@ -443,6 +444,8 @@ class DraupnirApp(App[None]):
 
         def operation(log: LogFn, _cancel: threading.Event) -> None:
             folder = new_clone(ws, branch, base, log, folder_name)
+            # It never raises, so a session that cannot start ends the action with Done.
+            open_clone_terminal(folder, ws.config.cmux, None, log)
             if not open_after:
                 return
             try:

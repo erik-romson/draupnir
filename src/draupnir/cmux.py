@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from draupnir.config import CmuxConfig
 from draupnir.errors import OperationError
 from draupnir.github import FAILURE, BuildState
 from draupnir.ide import project_name
@@ -562,6 +563,43 @@ def ensure_session(folder: Path, log: LogFn) -> TerminalSession:
             f"{folder.name}.\n{exc}"
         ) from exc
     return TerminalSession(name=session.name, state="running", cwd=str(resolved))
+
+
+def open_clone_terminal(
+    folder: Path, cmux_config: CmuxConfig, workspace_flag: bool | None, log: LogFn
+) -> None:
+    """Starts the terminal session of a clone that `new` just made. It never raises (rule B1).
+
+    It runs only after the clone exists, so a failure here never undoes the clone. Without a
+    cmux command line tool it says nothing. With `[cmux] session = true` it makes sure that the
+    session exists, and then logs the line that attaches to it. A session that cannot start is
+    logged together with what to do next, and the exit code of `new` stays 0.
+
+    workspace_flag is the --workspace/--no-workspace flag, or None when it was not given. The
+    workspace part of `new` (rule W3) reads it: the flag when given, else
+    cmux_config.clone_workspace. Nothing reads it yet.
+    """
+    del workspace_flag
+    try:
+        if cmux_command() is None:
+            return
+        if not cmux_config.session:
+            return
+        try:
+            ensure_session(folder, log)
+        except OperationError as exc:
+            log(str(exc))
+            log(
+                f"The clone is ready. Run draupnir attach {folder.name} to try again, or set "
+                "session = false under [cmux] in draupnir.toml."
+            )
+            return
+        log(f"Attach to the terminal session from any terminal with: {attach_line(folder)}")
+    # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
+    # draupnir, and the tests must see it. These three are what the outside world can cause: a
+    # cmux that refuses, a folder that went away, or output that does not parse.
+    except (OperationError, OSError, ValueError) as exc:
+        log(_first_line(str(exc)))
 
 
 def runs_in_session(session: TerminalSession) -> bool:

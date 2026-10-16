@@ -610,6 +610,12 @@ def test_pr_flow_reuses_an_open_pr(env: Env) -> None:
     sha = commit(folder, "more.txt", "more work\n", "more work")
     assert sha != first_sha
     _green(env, sha)
+    # Every call of the fake gh is a process. The default timeout of 2 seconds is too short on a
+    # loaded machine, and the wait would end with a timeout before the scripted build is green.
+    config = env.root / "draupnir.toml"
+    config.write_text(
+        config.read_text().replace("timeout-seconds = 2\n", "timeout-seconds = 120\n")
+    )
 
     lines, log = logger()
     outcome = pr_build_and_merge(env.ws(), folder, log, threading.Event())

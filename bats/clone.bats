@@ -121,3 +121,33 @@ setup() {
 
     assert_dir_not_exist "$ROOT/bad..name"
 }
+
+@test "new starts a terminal session for the clone" {
+    run draupnir new feature-a
+    assert_success
+
+    local clone
+    clone="$(cd "$ROOT/feature-a" && pwd -P)"
+    run grep -Fx "local-tmux	start	shop-feature-a	--cwd	$clone	--detached	" "$BATS_CMUX_LOG"
+    assert_success
+}
+
+@test "new starts no session when session is false" {
+    set_config cmux "session = false"
+
+    run draupnir new feature-a
+    assert_success
+
+    run grep "^local-tmux	start	" "$BATS_CMUX_LOG"
+    assert_failure
+}
+
+@test "a session that cannot start never stops new" {
+    BATS_CMUX_FAIL="local-tmux start"
+
+    run draupnir new feature-a
+    assert_success
+
+    assert_dir_exist "$ROOT/feature-a"
+    assert_git_clean "$ROOT/feature-a"
+}
