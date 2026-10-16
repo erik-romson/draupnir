@@ -336,14 +336,6 @@ async def test_ui_rebase_conflict_offers_the_ide_for_the_rebased_clone(env: Env)
         assert env.idea_log.read_text().strip() == str(folder)
 
 
-def _set_build_timeout(env: Env, seconds: float) -> None:
-    """Gives the wait a long timeout, so a slow machine never ends a UI test's wait early."""
-    config = env.root / "draupnir.toml"
-    text = config.read_text()
-    assert "timeout-seconds = 2\n" in text
-    config.write_text(text.replace("timeout-seconds = 2\n", f"timeout-seconds = {seconds}\n"))
-
-
 def _build_cell(app: DraupnirApp, name: str) -> str:
     """The build state in the Build cell, without the padding and the link arrow of the button."""
     return app.projects.table.get_cell(name, "build").plain.strip().removesuffix(" ↗")
@@ -369,7 +361,6 @@ def _build_cell_offset(app: DraupnirApp, name: str) -> tuple[int, int]:
 
 
 async def test_ui_push_and_follow_updates_the_build_column_while_waiting(env: Env) -> None:
-    _set_build_timeout(env, 120)
     _, log = logger()
     folder = new_clone(env.ws(), "feature/follow", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
@@ -406,7 +397,6 @@ async def test_ui_push_and_follow_updates_the_build_column_while_waiting(env: En
 
 
 async def test_ui_stop_waiting_ends_the_action_and_keeps_the_last_state(env: Env) -> None:
-    _set_build_timeout(env, 120)
     _, log = logger()
     folder = new_clone(env.ws(), "feature/stop", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
@@ -633,7 +623,6 @@ def _confirm_question(app: DraupnirApp) -> str:
 
 
 async def test_ui_pr_flow_asks_to_remove_the_clone_after_the_merge(env: Env) -> None:
-    _set_build_timeout(env, 120)
     _, log = logger()
     folder = new_clone(env.ws(), "feature/pr-ui", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
@@ -681,7 +670,6 @@ async def test_ui_pr_flow_asks_to_remove_the_clone_after_the_merge(env: Env) -> 
 
 
 async def test_ui_pr_flow_does_not_offer_removal_after_auto_merge(env: Env) -> None:
-    _set_build_timeout(env, 120)
     _, log = logger()
     folder = new_clone(env.ws(), "feature/pr-ui-auto", None, log)
     sha = commit(folder, "feature.txt", "feature work\n", "add feature file")

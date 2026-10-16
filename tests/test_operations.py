@@ -614,12 +614,6 @@ def test_pr_flow_reuses_an_open_pr(env: Env) -> None:
     sha = commit(folder, "more.txt", "more work\n", "more work")
     assert sha != first_sha
     _green(env, sha)
-    # Every call of the fake gh is a process. The default timeout of 2 seconds is too short on a
-    # loaded machine, and the wait would end with a timeout before the scripted build is green.
-    config = env.root / "draupnir.toml"
-    config.write_text(
-        config.read_text().replace("timeout-seconds = 2\n", "timeout-seconds = 120\n")
-    )
 
     lines, log = logger()
     outcome = pr_build_and_merge(env.ws(), folder, log, threading.Event())
@@ -739,12 +733,6 @@ def test_pr_flow_stops_when_the_pr_head_changed_during_the_build(env: Env) -> No
     folder, sha = _feature_clone(env, branch)
     _green(env, sha)
     # The teammate's push runs inside the wait for the build, and the wait's clock keeps running.
-    # The default of 2 seconds is too short for a slow machine, and the wait would end with a
-    # timeout before the flow can see the new head.
-    config = env.root / "draupnir.toml"
-    config.write_text(
-        config.read_text().replace("timeout-seconds = 2\n", "timeout-seconds = 120\n")
-    )
     pushed: list[str] = []
 
     def push_from_a_teammate() -> None:

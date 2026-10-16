@@ -119,7 +119,10 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     root = tmp_path / "shop"
     root.mkdir()
     (root / "draupnir.toml").write_text(
-        "[build]\npoll-seconds = 0.01\ngrace-seconds = 0.05\ntimeout-seconds = 2\n"
+        # Every call of the fake gh is a process. A short timeout ends a wait with "timeout" on a
+        # loaded machine, before the scripted build is green. No test relies on a short one: a test
+        # that wants a timeout builds its own BuildTiming.
+        "[build]\npoll-seconds = 0.01\ngrace-seconds = 0.05\ntimeout-seconds = 120\n"
         # The dashboard timer is off, so it does not disturb tests. A test that needs the timer
         # sets its own value.
         "\n[ui]\nrefresh-seconds = 0\n"
