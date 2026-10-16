@@ -350,7 +350,7 @@ async def test_feature_actions_are_disabled_for_main(env: Env) -> None:
             "Edit config",
             "Open branch",
             "Open IDE",
-            "New cmux workspace",
+            "cmux workspace",
             "Rebase on main",
             "Push and follow build",
             "Fast-forward main",

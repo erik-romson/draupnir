@@ -22,7 +22,7 @@ from draupnir.cmux import (
     close_clone_terminal,
     in_cmux,
     open_clone_terminal,
-    open_cmux_workspace,
+    open_clone_workspace_for_user,
     session_note,
     set_sidebar_status,
     sidebar_status,
@@ -60,7 +60,7 @@ BuildCallback = Callable[[BuildState], None]
 SuccessCallback = Callable[[object], None]
 
 # The buttons of the Projects tab that are always shown. Fast-forward main depends on the config,
-# and New cmux workspace on whether draupnir runs in cmux.
+# and cmux workspace on whether draupnir runs in cmux.
 _BASE_SHOWN_ACTIONS = frozenset(
     {
         "fetch-all",
@@ -463,7 +463,7 @@ class DraupnirApp(App[None]):
     # ----- Actions and key bindings -----------------------------------------------------
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Hides the key of New cmux workspace, and turns it off, when its button is hidden."""
+        """Hides the key of cmux workspace, and turns it off, when its button is hidden."""
         if action == "open_cmux_workspace":
             return "cmux-workspace" in self.projects.shown_actions
         return True
@@ -564,14 +564,20 @@ class DraupnirApp(App[None]):
         self.start(f"Open the IDE in {name}", operation)
 
     def action_open_cmux_workspace(self) -> None:
-        """Opens a new cmux workspace with a shell in the selected clone."""
+        """Goes to the cmux workspace of the selected clone, or opens it (rule W4).
+
+        With [cmux] session = true, the workspace shows the clone's terminal session, which
+        starts first when it does not run. With session = false, it opens a new workspace with a
+        shell in the clone.
+        """
         selected = self.projects.selected_status()
         if selected is None:
             return
         folder = selected.folder
+        cmux_config = self.ws.config.cmux
 
         def operation(log: LogFn, _cancel: threading.Event) -> None:
-            open_cmux_workspace(folder, log)
+            open_clone_workspace_for_user(folder, cmux_config, log)
 
         self.start(f"Open a cmux workspace in {selected.name}", operation)
 

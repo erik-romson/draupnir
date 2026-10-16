@@ -1,8 +1,9 @@
 """Talks to the cmux terminal: new workspaces, and the dashboard's status in its sidebar.
 
 It also names the terminal session of a clone, builds the line that attaches to it, and reads,
-starts and closes that session with cmux local-tmux. It writes the lines about the session that
-the remove question shows.
+starts and closes that session with cmux local-tmux. It finds and opens the clone's own cmux
+workspace, which shows that session. It writes the lines about the session that the remove
+question shows.
 """
 
 from __future__ import annotations
@@ -371,8 +372,8 @@ def open_cmux_workspace(
     if created is None:
         return None
     # The clone's workspace runs `cmux surface resume set` at this place, between the create and
-    # the todo pane, so it needs the ids first. It calls _create_cmux_workspace and
-    # _add_todo_pane_or_log itself, with that call in between.
+    # the todo pane, so it needs the ids first. show_clone_workspace calls
+    # _create_cmux_workspace and _add_todo_pane_or_log itself, with that call in between.
     _add_todo_pane_or_log(created, folder, log)
     return created
 
@@ -545,6 +546,80 @@ def find_clone_workspace(folder: Path, log: LogFn) -> CloneWorkspace:
 def _unreadable_workspace(failure: str, log: LogFn) -> CloneWorkspace:
     log(failure)
     return CloneWorkspace(outcome="unreadable", failure=failure)
+
+
+# What show_clone_workspace did: it found the clone's workspace, or it opened a new one.
+ShownWorkspace = Literal["found", "opened"]
+
+
+def show_clone_workspace(folder: Path, focus: bool, log: LogFn) -> ShownWorkspace:
+    """Goes to the cmux workspace of the clone, or opens it with the clone's terminal session.
+
+    The caller has made sure that the session runs, and that draupnir runs in cmux. When the
+    clone has its workspace, cmux selects it with focus, and without focus the log says that it
+    is there. Only when the lookup found no workspace does draupnir create one. Its terminal
+    runs the attach line, and cmux saves the same line as the command that brings the terminal
+    back after a restart. The todo list goes below the terminal, as in every new workspace.
+
+    Raises OperationError when the workspaces cannot be read, because a new workspace could be a
+    second one for the clone. It also raises when cmux refuses to select or create the
+    workspace. A failed save of the command is only logged, because the workspace still works.
+    """
+    found = find_clone_workspace(folder, log)
+    if found.outcome == "found":
+        if focus:
+            assert found.workspace_id is not None  # A found workspace always has its id.
+            _run_cmux(["workspace", "select", found.workspace_id], folder, log)
+        else:
+            log(f"The clone already has the cmux workspace {found.title}.")
+        return "found"
+    if found.outcome == "unreadable":
+        # The first line makes sense alone. The failure follows for the output of the command.
+        lines = [
+            "draupnir could not read the cmux workspaces, so it did not open one for "
+            f"{folder.name}, because the clone may have one already. Try again in a moment."
+        ]
+        if found.failure:
+            lines.append(found.failure)
+        raise OperationError("\n".join(lines))
+
+    created = _create_cmux_workspace(folder, log, command=attach_line(folder), focus=focus)
+    title = project_name(folder)
+    lost = (
+        f"The cmux workspace {title} is open, but cmux will not bring its terminal back after "
+        "a restart."
+    )
+    if created is None:
+        # Without the ids, draupnir cannot save the command that brings the terminal back.
+        log(lost)
+        return "opened"
+    try:
+        _run_cmux(
+            [
+                "surface",
+                "resume",
+                "set",
+                "--workspace",
+                created.workspace_id,
+                "--surface",
+                created.surface_id,
+                "--cwd",
+                folder,
+                "--kind",
+                "tmux",
+                "--name",
+                title,
+                "--",
+                *attach_argv(folder),
+            ],
+            folder,
+            log,
+        )
+    except OperationError as exc:
+        log(lost)
+        log(_first_line(str(exc)))
+    _add_todo_pane_or_log(created, folder, log)
+    return "opened"
 
 
 # ----- The terminal session of a clone ------------------------------------------------------
@@ -778,38 +853,91 @@ def ensure_session(folder: Path, log: LogFn) -> TerminalSession:
 def open_clone_terminal(
     folder: Path, cmux_config: CmuxConfig, workspace_flag: bool | None, log: LogFn
 ) -> None:
-    """Starts the terminal session of a clone that `new` just made. It never raises (rule B1).
+    """Starts the terminal session and the cmux workspace of a clone that `new` just made.
 
-    It runs only after the clone exists, so a failure here never undoes the clone. Without a
-    cmux command line tool it says nothing. With `[cmux] session = true` it makes sure that the
-    session exists, and then logs the line that attaches to it. A session that cannot start is
-    logged together with what to do next, and the exit code of `new` stays 0.
+    It never raises (rule B1). It runs only after the clone exists, so a failure here never
+    undoes the clone. Without a cmux command line tool it says nothing. With
+    `[cmux] session = true` it makes sure that the session exists. A session that cannot start
+    is logged together with what to do next, and the exit code of `new` stays 0.
 
     workspace_flag is the --workspace/--no-workspace flag, or None when it was not given. The
-    workspace part of `new` (rule W3) reads it: the flag when given, else
-    cmux_config.clone_workspace. Nothing reads it yet.
+    flag decides whether the clone gets a cmux workspace, and without it
+    cmux_config.clone_workspace decides. When the session runs and the clone got no workspace,
+    the log ends with the line that attaches to the session.
     """
-    del workspace_flag
     try:
         if cmux_command() is None:
             return
-        if not cmux_config.session:
-            return
-        try:
-            ensure_session(folder, log)
-        except OperationError as exc:
-            log(str(exc))
-            log(
-                f"The clone is ready. Run draupnir attach {folder.name} to try again, or set "
-                "session = false under [cmux] in draupnir.toml."
-            )
-            return
-        log(f"Attach to the terminal session from any terminal with: {attach_line(folder)}")
+        if cmux_config.session:
+            try:
+                ensure_session(folder, log)
+            except OperationError as exc:
+                log(str(exc))
+                log(
+                    f"The clone is ready. Run draupnir attach {folder.name} to try again, or "
+                    "set session = false under [cmux] in draupnir.toml."
+                )
+                return
+        shown = _open_new_clone_workspace(folder, cmux_config, workspace_flag, log)
+        if cmux_config.session and not shown:
+            log(f"Attach to the terminal session from any terminal with: {attach_line(folder)}")
     # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
     # draupnir, and the tests must see it. These three are what the outside world can cause: a
     # cmux that refuses, a folder that went away, or output that does not parse.
     except (OperationError, OSError, ValueError) as exc:
         log(_first_line(str(exc)))
+
+
+def _open_new_clone_workspace(
+    folder: Path, cmux_config: CmuxConfig, workspace_flag: bool | None, log: LogFn
+) -> bool:
+    """Opens the cmux workspace of a new clone when the flag or the config asks for one (W3).
+
+    Returns True when the clone has a workspace now, found or opened. The workspace does not
+    take the focus, so the user stays where `new` ran. Outside cmux there is no workspace to
+    open, and only a flag that was given makes that worth a line. The first failure ends this
+    part, so a cmux that refuses or hangs costs one timeout. A lookup that cannot be read opens
+    nothing, because the clone may have a workspace already.
+    """
+    wish = workspace_flag if workspace_flag is not None else cmux_config.clone_workspace
+    if not wish:
+        return False
+    if not in_cmux():
+        if workspace_flag is not None:
+            log(
+                "draupnir does not run in a cmux terminal, so it did not open a cmux workspace "
+                f"for {folder.name}."
+            )
+        return False
+    try:
+        if cmux_config.session:
+            show_clone_workspace(folder, False, log)
+        else:
+            # Without a session, the workspace is a plain shell in the clone, as w opens it.
+            open_cmux_workspace(folder, log, focus=False)
+    except OperationError as exc:
+        log(str(exc))
+        return False
+    return True
+
+
+def open_clone_workspace_for_user(folder: Path, cmux_config: CmuxConfig, log: LogFn) -> None:
+    """Goes to the cmux workspace of a clone, for the w key of the dashboard (rule W4).
+
+    With `[cmux] session = true` it makes sure that the clone's terminal session runs, and then
+    selects the clone's workspace, or opens it with the session when the clone has none. With
+    session = false it opens a new workspace with a shell in the clone, as before. The caller
+    has made sure that draupnir runs in cmux.
+
+    Raises OperationError when the session cannot start, when the workspaces cannot be read, or
+    when cmux refuses the workspace. So a second press after a failed read never opens a second
+    workspace.
+    """
+    if not cmux_config.session:
+        open_cmux_workspace(folder, log)
+        return
+    ensure_session(folder, log)
+    show_clone_workspace(folder, True, log)
 
 
 def runs_in_session(session: TerminalSession) -> bool:

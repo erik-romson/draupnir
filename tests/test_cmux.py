@@ -22,12 +22,14 @@ from draupnir.cmux import (
     YELLOW,
     SidebarStatus,
     TerminalSession,
+    attach_argv,
     attach_line,
     clear_sidebar_status,
     close_session,
     cmux_command,
     ensure_session,
     find_clone_workspace,
+    open_clone_workspace_for_user,
     read_session,
     runs_in_session,
     same_folder,
@@ -35,8 +37,10 @@ from draupnir.cmux import (
     session_name,
     session_programs,
     set_sidebar_status,
+    show_clone_workspace,
     sidebar_status,
 )
+from draupnir.config import CmuxConfig
 from draupnir.errors import OperationError
 from draupnir.github import FAILURE, SUCCESS, BuildState
 from draupnir.status import ProjectStatus
@@ -1232,3 +1236,218 @@ def test_the_lookup_counts_the_other_tabs_of_the_workspace(
 
     assert result.outcome == "found"
     assert result.other_tabs == others
+
+
+# ----- Going to the workspace of a clone, or opening it (W2, W4) ------------------------------
+
+_JSON_FLAGS = ["--json", "--id-format", "both"]
+_UNREADABLE_WORKSPACES = (
+    "draupnir could not read the cmux workspaces, so it did not open one for feature-a, because "
+    "the clone may have one already. Try again in a moment."
+)
+
+
+def _todo_calls() -> list[list[str]]:
+    """The calls that put the todo list below the terminal of the workspace new-workspace."""
+    return [
+        ["todo", "open", "--workspace", "new-workspace", *_JSON_FLAGS],
+        [
+            "split-off",
+            "--surface",
+            "new-todo",
+            "down",
+            "--workspace",
+            "new-workspace",
+            "--focus",
+            "false",
+        ],
+        ["focus-panel", "--panel", "new-terminal", "--workspace", "new-workspace"],
+    ]
+
+
+def _bound_tree(folder: Path) -> tuple[dict[str, object], dict[str, object]]:
+    """A tree with the workspace of the clone in folder, and the binding of its terminal."""
+    tree = _tree(_workspace("ws-a", f"{folder.parent.name} {folder.name}", [_surface("t-a")]))
+    return tree, {"t-a": _attach_binding(folder)}
+
+
+def test_show_clone_workspace_selects_the_workspace_that_the_clone_has(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    tree, bindings = _bound_tree(folder)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, tree=tree, bindings=bindings)
+
+    shown = show_clone_workspace(folder, True, logger()[1])
+
+    assert shown == "found"
+    assert _verbs(calls) == [["tree", "--all"], ["surface", "resume"], ["workspace", "select"]]
+    assert cmux_calls(calls)[-1] == ["workspace", "select", "id-ws-a"]
+
+
+def test_show_clone_workspace_without_focus_only_says_that_the_clone_has_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    tree, bindings = _bound_tree(folder)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, tree=tree, bindings=bindings)
+    lines, log = logger()
+
+    shown = show_clone_workspace(folder, False, log)
+
+    assert shown == "found"
+    assert _warnings(lines) == [
+        f"The clone already has the cmux workspace {env.root.name} feature-a."
+    ]
+    assert ["workspace", "select"] not in _verbs(calls)
+    assert ["workspace", "create"] not in _verbs(calls)
+
+
+def test_show_clone_workspace_opens_nothing_when_the_workspaces_cannot_be_read(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed read may hide the clone's workspace, and a new one would be a second one."""
+    folder = _clone(env)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, fail=["tree"])
+
+    with pytest.raises(OperationError) as raised:
+        show_clone_workspace(folder, True, logger()[1])
+
+    message = str(raised.value).splitlines()
+    assert message[0] == _UNREADABLE_WORKSPACES
+    assert "failed with exit code 1" in message[1]
+    assert _verbs(calls) == [["tree", "--all"]]
+
+
+def test_show_clone_workspace_opens_a_workspace_that_attaches_to_the_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    title = f"{env.root.name} feature-a"
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin)
+
+    shown = show_clone_workspace(folder, True, logger()[1])
+
+    assert shown == "opened"
+    assert cmux_calls(calls) == [
+        ["tree", "--all", *_JSON_FLAGS],
+        ["workspace-group", "list", *_JSON_FLAGS],
+        [
+            "workspace",
+            "create",
+            "--name",
+            title,
+            "--cwd",
+            str(folder),
+            "--focus",
+            "true",
+            "--command",
+            attach_line(folder),
+            *_JSON_FLAGS,
+        ],
+        [
+            "surface",
+            "resume",
+            "set",
+            "--workspace",
+            "new-workspace",
+            "--surface",
+            "new-terminal",
+            "--cwd",
+            str(folder),
+            "--kind",
+            "tmux",
+            "--name",
+            title,
+            "--",
+            *attach_argv(folder),
+        ],
+        *_todo_calls(),
+    ]
+
+
+def test_show_clone_workspace_keeps_the_workspace_when_cmux_cannot_save_the_command(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, fail=["surface resume set"])
+    lines, log = logger()
+
+    shown = show_clone_workspace(folder, False, log)
+
+    assert shown == "opened"
+    warnings = _warnings(lines)
+    assert warnings[0] == (
+        f"The cmux workspace {env.root.name} feature-a is open, but cmux will not bring its "
+        "terminal back after a restart."
+    )
+    assert "surface resume set" in warnings[1]
+    assert cmux_calls(calls)[-3:] == _todo_calls()
+
+
+def test_the_w_key_without_a_session_opens_a_plain_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With session = false, w opens the workspace that it opened before sessions existed."""
+    folder = _clone(env)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin)
+
+    open_clone_workspace_for_user(folder, CmuxConfig(session=False), logger()[1])
+
+    assert cmux_calls(calls) == [
+        ["workspace-group", "list", *_JSON_FLAGS],
+        [
+            "workspace",
+            "create",
+            "--name",
+            f"{env.root.name} feature-a",
+            "--cwd",
+            str(folder),
+            "--focus",
+            "true",
+            *_JSON_FLAGS,
+        ],
+        *_todo_calls(),
+    ]
+
+
+def test_the_w_key_starts_the_session_before_it_opens_the_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin)
+
+    open_clone_workspace_for_user(folder, CmuxConfig(), logger()[1])
+
+    verbs = _verbs(calls)
+    assert verbs[:4] == [
+        ["local-tmux", "list"],
+        ["local-tmux", "start"],
+        ["tree", "--all"],
+        ["workspace-group", "list"],
+    ]
+    create = cmux_calls(calls)[4]
+    assert create[:2] == ["workspace", "create"]
+    assert create[create.index("--focus") + 1] == "true"
+
+
+def test_the_w_key_opens_no_workspace_when_the_session_belongs_to_another_folder(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    other = env.tmp / "elsewhere" / "feature-a"
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, sessions=_sessions(_entry(folder, cwd=str(other))))
+
+    with pytest.raises(OperationError) as raised:
+        open_clone_workspace_for_user(folder, CmuxConfig(), logger()[1])
+
+    assert str(raised.value).startswith("The terminal session shop-feature-a belongs to ")
+    assert _verbs(calls) == [["local-tmux", "list"]]

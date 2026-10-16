@@ -26,7 +26,7 @@ from textual.content import Content
 from textual.pilot import Pilot
 from textual.widgets import Static
 
-from draupnir.cmux import GREEN, YELLOW, session_name
+from draupnir.cmux import GREEN, YELLOW, attach_line, session_name
 from draupnir.operations import push
 from draupnir.setup import new_clone, unsaved_work
 from draupnir.ui.app import DraupnirApp
@@ -725,6 +725,7 @@ async def test_ui_cmux_workspace_is_hidden_outside_cmux(env: Env) -> None:
 async def test_ui_cmux_workspace_opens_the_selected_clone(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """With a session, w starts it first, and the new workspace attaches to it (W4)."""
     calls = write_stub_cmux(env.bin)
     monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
     feature = new_clone(env.ws(), "feature-cmux", None, logger()[1])
@@ -733,14 +734,177 @@ async def test_ui_cmux_workspace_opens_the_selected_clone(
     async with app.run_test(size=SIZE) as pilot:
         await settle(app, pilot)
         assert app.projects.buttons["cmux-workspace"].display
+        assert str(app.projects.buttons["cmux-workspace"].label) == "cmux workspace"
         _select(app, "feature-cmux")
         await pilot.pause()
 
         await pilot.press("w")
         await settle(app, pilot)
 
+        verbs = [call[:2] for call in _cmux_calls_of_w(calls)]
+        assert verbs.index(["local-tmux", "start"]) < verbs.index(["workspace", "create"])
         create = next(call for call in cmux_calls(calls) if call[:2] == ["workspace", "create"])
         assert create[create.index("--cwd") + 1] == str(feature)
+        assert create[create.index("--focus") + 1] == "true"
+        assert create[create.index("--command") + 1] == attach_line(feature)
+
+
+class Notifications:
+    """Records what the app shows as notifications."""
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, str, str]] = []
+
+    def notify(
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: str = "information",
+        timeout: float | None = None,
+        markup: bool = True,
+    ) -> None:
+        self.shown.append((message, title, severity))
+
+    def errors(self) -> list[str]:
+        return [message for message, _title, severity in self.shown if severity == "error"]
+
+
+def _cmux_calls_of_w(calls: Path) -> list[list[str]]:
+    """The calls of the stub cmux, without those that write the sidebar status."""
+    return [call for call in cmux_calls(calls) if call[0] not in ("set-status", "clear-status")]
+
+
+async def _press_w_on(
+    app: DraupnirApp, pilot: Pilot[None], name: str, monkeypatch: pytest.MonkeyPatch
+) -> Notifications:
+    """Presses w on the clone called name, and returns the notifications of the action."""
+    await settle(app, pilot)
+    _select(app, name)
+    await pilot.pause()
+    notifications = Notifications()
+    monkeypatch.setattr(app, "notify", notifications.notify)
+    await pilot.press("w")
+    await settle(app, pilot)
+    return notifications
+
+
+async def test_ui_cmux_workspace_goes_to_the_workspace_that_the_clone_has(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    feature = new_clone(env.ws(), "feature-cmux", None, logger()[1])
+    terminal = {"id": "t-b-id", "ref": "t-b", "type": "terminal"}
+    tree = {
+        "windows": [
+            {
+                "workspaces": [
+                    {
+                        "id": "ws-b",
+                        "ref": "workspace:2",
+                        "title": f"{env.root.name} feature-cmux",
+                        "panes": [{"surfaces": [terminal]}],
+                    }
+                ]
+            }
+        ]
+    }
+    arguments = ["cmux", "local-tmux", "attach", session_name(feature), "--headless"]
+    binding = {"resume_binding": {"launch_command": {"arguments": arguments}, "cwd": str(feature)}}
+    calls = write_stub_cmux(
+        env.bin,
+        sessions={"sessions": [_running_session(feature)]},
+        tree=tree,
+        bindings={"t-b": binding},
+    )
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        notifications = await _press_w_on(app, pilot, "feature-cmux", monkeypatch)
+
+        made = _cmux_calls_of_w(calls)
+        assert ["workspace", "select", "ws-b"] in made
+        assert not [call for call in made if call[:2] == ["workspace", "create"]]
+        assert notifications.errors() == []
+
+
+async def test_ui_cmux_workspace_without_a_session_opens_a_plain_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With session = false, w makes the calls it made before sessions existed."""
+    append_config(env.root, "\n[cmux]\nsession = false\n")
+    feature = new_clone(env.ws(), "feature-cmux", None, logger()[1])
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await _press_w_on(app, pilot, "feature-cmux", monkeypatch)
+
+        json_flags = ["--json", "--id-format", "both"]
+        assert _cmux_calls_of_w(calls) == [
+            ["workspace-group", "list", *json_flags],
+            [
+                "workspace",
+                "create",
+                "--name",
+                f"{env.root.name} feature-cmux",
+                "--cwd",
+                str(feature),
+                "--focus",
+                "true",
+                *json_flags,
+            ],
+            ["todo", "open", "--workspace", "new-workspace", *json_flags],
+            [
+                "split-off",
+                "--surface",
+                "new-todo",
+                "down",
+                "--workspace",
+                "new-workspace",
+                "--focus",
+                "false",
+            ],
+            ["focus-panel", "--panel", "new-terminal", "--workspace", "new-workspace"],
+        ]
+
+
+async def test_ui_cmux_workspace_stops_when_the_session_belongs_to_another_folder(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    feature = new_clone(env.ws(), "feature-cmux", None, logger()[1])
+    other = env.tmp / "elsewhere" / "feature-cmux"
+    entry = {**_running_session(feature), "cwd": str(other)}
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [entry]})
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        notifications = await _press_w_on(app, pilot, "feature-cmux", monkeypatch)
+
+        [error] = notifications.errors()
+        assert error.startswith(f"The terminal session {session_name(feature)} belongs to {other}")
+        assert [call[:2] for call in _cmux_calls_of_w(calls)] == [["local-tmux", "list"]]
+
+
+async def test_ui_cmux_workspace_opens_none_when_the_workspaces_cannot_be_read(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second press after a failed read must not open a second workspace (A22)."""
+    new_clone(env.ws(), "feature-cmux", None, logger()[1])
+    calls = write_stub_cmux(env.bin, fail=["tree"])
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        notifications = await _press_w_on(app, pilot, "feature-cmux", monkeypatch)
+
+        [error] = notifications.errors()
+        assert error.startswith(
+            "draupnir could not read the cmux workspaces, so it did not open one for feature-cmux"
+        )
+        assert not [call for call in _cmux_calls_of_w(calls) if call[:2] == ["workspace", "create"]]
 
 
 async def test_ui_writes_the_status_of_the_clones_into_the_cmux_sidebar(

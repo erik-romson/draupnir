@@ -21,7 +21,7 @@ from helpers import (
 
 from draupnir import __version__
 from draupnir.cli import confirm, main
-from draupnir.cmux import attach_line, session_name
+from draupnir.cmux import attach_argv, attach_line, session_name
 from draupnir.errors import OperationError
 from draupnir.setup import new_clone
 from draupnir.ui.app import DraupnirApp
@@ -551,6 +551,283 @@ def test_new_survives_an_oserror_while_it_reads_the_sessions(
     assert code == 0
     assert (env.root / "feature-a").is_dir()
     assert out.count("the folder went away") == 1
+
+
+# ----- draupnir new and the cmux workspace of the clone --------------------------------------
+
+_JSON_FLAGS = ["--json", "--id-format", "both"]
+_ATTACH_INTRO = "Attach to the terminal session from any terminal with: "
+_NOT_IN_CMUX = (
+    "draupnir does not run in a cmux terminal, so it did not open a cmux workspace for feature-a."
+)
+_UNREADABLE_WORKSPACES = "draupnir could not read the cmux workspaces"
+
+# The first word of each cmux call that is about a workspace, and not about the session.
+_WORKSPACE_VERBS = ("tree", "workspace-group", "workspace", "surface", "todo", "split-off")
+
+
+def _in_cmux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+
+def _workspace_calls(calls: Path) -> list[list[str]]:
+    """The calls of the stub cmux that read, open or change a workspace."""
+    if not calls.exists():
+        return []
+    return [call for call in cmux_calls(calls) if call[0] in _WORKSPACE_VERBS]
+
+
+def _creates(calls: Path) -> list[list[str]]:
+    return [call for call in _workspace_calls(calls) if call[:2] == ["workspace", "create"]]
+
+
+def test_new_in_cmux_opens_a_workspace_that_shows_the_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    clone = env.root / "feature-a"
+    title = f"{env.root.name} feature-a"
+    made = cmux_calls(calls)
+    start = ["local-tmux", "start", "shop-feature-a", "--cwd", str(clone.resolve()), "--detached"]
+    assert code == 0
+    # The workspace does not take the focus, so the user stays where new ran (Q5).
+    assert made[made.index(start) + 1 :] == [
+        ["tree", "--all", *_JSON_FLAGS],
+        ["workspace-group", "list", *_JSON_FLAGS],
+        [
+            "workspace",
+            "create",
+            "--name",
+            title,
+            "--cwd",
+            str(clone),
+            "--focus",
+            "false",
+            "--command",
+            attach_line(clone),
+            *_JSON_FLAGS,
+        ],
+        [
+            "surface",
+            "resume",
+            "set",
+            "--workspace",
+            "new-workspace",
+            "--surface",
+            "new-terminal",
+            "--cwd",
+            str(clone),
+            "--kind",
+            "tmux",
+            "--name",
+            title,
+            "--",
+            *attach_argv(clone),
+        ],
+        ["todo", "open", "--workspace", "new-workspace", *_JSON_FLAGS],
+        [
+            "split-off",
+            "--surface",
+            "new-todo",
+            "down",
+            "--workspace",
+            "new-workspace",
+            "--focus",
+            "false",
+        ],
+        ["focus-panel", "--panel", "new-terminal", "--workspace", "new-workspace"],
+    ]
+    assert _ATTACH_INTRO not in capsys.readouterr().out
+
+
+def test_new_in_cmux_puts_the_workspace_in_the_group_of_the_caller(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_cmux(monkeypatch)
+    groups = '{"groups": [{"id": "group-shop", "member_workspace_ids": ["workspace-1"]}]}'
+    calls = write_stub_cmux(env.bin, groups)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    assert code == 0
+    [create] = _creates(calls)
+    assert create[create.index("--group") :][:6] == [
+        "--group",
+        "group-shop",
+        "--group-placement",
+        "afterCurrent",
+        "--group-reference",
+        "workspace-1",
+    ]
+
+
+def test_new_no_workspace_opens_none_and_prints_the_attach_line(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a", "--no-workspace"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_calls(calls) == []
+    assert _starts(calls) != []
+    assert out.strip().splitlines()[-1] == _ATTACH_INTRO + attach_line(env.root / "feature-a")
+
+
+def test_new_workspace_overrides_clone_workspace_false(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_cmux(monkeypatch)
+    append_config(env.root, "\n[cmux]\nclone-workspace = false\n")
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a", "--workspace"])
+
+    assert code == 0
+    assert len(_creates(calls)) == 1
+
+
+def test_new_with_clone_workspace_false_opens_no_workspace_and_says_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    append_config(env.root, "\n[cmux]\nclone-workspace = false\n")
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_calls(calls) == []
+    assert "cmux workspace" not in out
+    assert _ATTACH_INTRO in out
+
+
+def test_new_workspace_outside_cmux_warns_and_still_succeeds(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a", "--workspace"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.count(_NOT_IN_CMUX) == 1
+    assert _workspace_calls(calls) == []
+    assert _ATTACH_INTRO in out
+
+
+def test_new_outside_cmux_says_nothing_about_the_workspace_of_the_config(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    assert code == 0
+    assert "does not run in a cmux terminal" not in capsys.readouterr().out
+
+
+def test_new_keeps_the_session_when_cmux_refuses_the_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    calls = write_stub_cmux(env.bin, fail=["workspace create"])
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.count("failed with exit code 1") == 1
+    assert [call for call in _workspace_calls(calls) if call[0] in ("surface", "todo")] == []
+    assert _closes(calls) == []
+    assert out.strip().splitlines()[-1] == _ATTACH_INTRO + attach_line(env.root / "feature-a")
+
+
+def test_new_keeps_the_workspace_when_cmux_cannot_save_its_command(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    calls = write_stub_cmux(env.bin, fail=["surface resume set"])
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "will not bring its terminal back after a restart" in out
+    assert [call[0] for call in cmux_calls(calls)[-3:]] == ["todo", "split-off", "focus-panel"]
+    assert _ATTACH_INTRO not in out
+
+
+@pytest.mark.parametrize(
+    ("tree", "fail"),
+    [
+        pytest.param(None, "tree", id="the tree fails"),
+        pytest.param(
+            {
+                "windows": [
+                    {
+                        "workspaces": [
+                            {
+                                "id": "ws-a",
+                                "ref": "workspace:1",
+                                "title": "shop feature-a",
+                                "panes": [
+                                    {"surfaces": [{"id": "t-a", "ref": "t-a", "type": "terminal"}]}
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            },
+            "surface resume show",
+            id="a binding cannot be read",
+        ),
+    ],
+)
+def test_new_opens_no_workspace_when_the_workspaces_cannot_be_read(
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tree: object,
+    fail: str,
+) -> None:
+    """A failed read may hide a workspace of the clone, so new does not open a second one."""
+    _in_cmux(monkeypatch)
+    calls = write_stub_cmux(env.bin, tree=tree, fail=[fail])
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _creates(calls) == []
+    assert out.count(_UNREADABLE_WORKSPACES) == 1
+    assert _closes(calls) == []
+    assert out.strip().splitlines()[-1] == _ATTACH_INTRO + attach_line(env.root / "feature-a")
+
+
+def test_new_without_a_session_opens_a_plain_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _in_cmux(monkeypatch)
+    append_config(env.root, "\n[cmux]\nsession = false\nclone-workspace = true\n")
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    assert code == 0
+    assert _local_tmux_calls(calls) == []
+    [create] = _creates(calls)
+    assert "--command" not in create
+    assert create[create.index("--focus") + 1] == "false"
+    assert [call for call in cmux_calls(calls) if call[0] in ("tree", "surface")] == []
+    assert _ATTACH_INTRO not in capsys.readouterr().out
 
 
 # ----- draupnir remove and the terminal session ----------------------------------------------

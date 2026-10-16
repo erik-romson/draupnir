@@ -151,3 +151,20 @@ setup() {
     assert_dir_exist "$ROOT/feature-a"
     assert_git_clean "$ROOT/feature-a"
 }
+
+@test "new inside cmux opens a workspace that shows the session" {
+    export CMUX_WORKSPACE_ID=workspace-test
+
+    run draupnir new feature-a
+    assert_success
+
+    local attach="$STUB_BIN/cmux local-tmux attach shop-feature-a --headless"
+    run grep -F "workspace	create	" "$BATS_CMUX_LOG"
+    assert_success
+    assert_output --partial "--command	$attach	"
+
+    run grep -F "surface	resume	set	" "$BATS_CMUX_LOG"
+    assert_success
+    assert_output --partial "--cwd	$ROOT/feature-a	"
+    assert_output --partial "	--	$STUB_BIN/cmux	local-tmux	attach	shop-feature-a	--headless	"
+}

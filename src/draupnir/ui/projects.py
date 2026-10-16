@@ -80,10 +80,10 @@ ACTION_BUTTONS: tuple[ActionButton, ...] = (
     ),
     ActionButton(
         "cmux-workspace",
-        "New cmux workspace",
+        "cmux workspace",
         Needs.PROJECT,
-        "Opens a new cmux workspace with a shell in the selected clone. Only shown when draupnir "
-        "runs in cmux. Key: w.",
+        "Goes to the cmux workspace of the selected clone, or opens it with the clone's terminal "
+        "session. Only shown when draupnir runs in cmux. Key: w.",
     ),
     ActionButton(
         "rebase",
