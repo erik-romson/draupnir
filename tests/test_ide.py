@@ -288,9 +288,7 @@ def test_open_cmux_workspace_joins_the_group_of_the_dashboard(
 def test_open_cmux_workspace_keeps_the_workspace_when_the_todo_list_fails(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_stub_cmux(env.bin)
-    stub = env.bin / "cmux"
-    stub.write_text(stub.read_text().replace("  todo)", "  todo) exit 1 ;;\n  never)"))
+    write_stub_cmux(env.bin, fail=["todo"])
     monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
     lines, log = logger()
 

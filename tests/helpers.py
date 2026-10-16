@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import stat
 import subprocess
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,26 +53,157 @@ def write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def write_stub_cmux(bin_dir: Path, groups: str = '{"groups": []}') -> Path:
+# The stub cmux is a Python script, so it can read and edit JSON. A small shell file named cmux
+# in the bin folder runs it, the way tests/conftest.py starts the fake gh. The script lives next to
+# the bin folder, so nothing else lands on the PATH. It finds its data files next to itself.
+_STUB_CMUX = r"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+here = Path(__file__).parent
+args = sys.argv[1:]
+
+with (here / "cmux-calls.txt").open("a") as handle:
+    handle.write("".join(f"{arg}\t" for arg in args) + "\n")
+
+rules = json.loads((here / "cmux-rules.json").read_text())
+sessions_file = here / "cmux-sessions.json"
+
+
+def matches(prefixes):
+    return any(args[: len(prefix.split())] == prefix.split() for prefix in prefixes)
+
+
+def option(name):
+    return args[args.index(name) + 1] if name in args[:-1] else ""
+
+
+def close_session():
+    sessions = json.loads(sessions_file.read_text())
+    sessions["sessions"] = [
+        entry for entry in sessions["sessions"] if entry.get("session_name") != args[2]
+    ]
+    sessions_file.write_text(json.dumps(sessions))
+
+
+def fail():
+    print("cmux: the stub was told to fail this call", file=sys.stderr)
+    sys.exit(1)
+
+
+if matches(rules["slow"]):
+    time.sleep(1)
+if matches(rules["fail"]):
+    fail()
+
+if args[:2] == ["local-tmux", "close"] and len(args) > 2:
+    close_session()
+elif args[:2] == ["local-tmux", "start"]:
+    lines = [f"{name}={value}" for name, value in os.environ.items()]
+    (here / "cmux-start-env.txt").write_text("\n".join(lines) + "\n")
+
+if matches(rules["fail_after"]):
+    fail()
+
+if args[:1] == ["workspace-group"]:
+    print((here / "cmux-groups.json").read_text(), end="")
+elif args[:2] == ["local-tmux", "list"]:
+    print(sessions_file.read_text(), end="")
+elif args[:1] == ["tree"]:
+    print((here / "cmux-tree.json").read_text(), end="")
+elif args[:3] == ["surface", "resume", "show"]:
+    bindings = json.loads((here / "cmux-bindings.json").read_text())
+    print(json.dumps(bindings.get(option("--surface"), {})))
+elif args[:1] == ["workspace"]:
+    print('{"workspace_id": "new-workspace", "surface_id": "new-terminal"}')
+elif args[:1] == ["todo"]:
+    print('{"surface_id": "new-todo"}')
+"""
+
+
+def _json_text(value: object) -> str:
+    """A JSON value as text: a str is already JSON text, and anything else is dumped."""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def write_stub_cmux(
+    bin_dir: Path,
+    groups: str = '{"groups": []}',
+    *,
+    sessions: object = None,
+    tree: object = None,
+    bindings: Mapping[str, object] | None = None,
+    fail: Sequence[str] = (),
+    fail_after: Sequence[str] = (),
+    slow: Sequence[str] = (),
+) -> Path:
     """Writes a stub cmux into bin_dir, and returns the file that gets its calls.
 
-    Each call appends one line to the file, with the arguments separated by tabs. The stub
-    answers `workspace-group list` with groups, `workspace create` with the workspace
-    new-workspace and the terminal new-terminal, and `todo open` with the surface new-todo.
+    Each call appends one line to the file, with each argument followed by a tab. Failed and
+    slow calls are logged too. The stub answers:
+
+    - `workspace-group list` with groups, which is JSON text;
+    - `workspace ...` with the workspace new-workspace and the terminal new-terminal;
+    - `todo ...` with the surface new-todo;
+    - `local-tmux list` with sessions, read from a file on every call. A value is JSON text or a
+      Python object, and the default is `{"sessions": []}`. `local-tmux close <name>` removes the
+      entry with that name from the file. `local-tmux start` adds no entry. It writes its
+      environment to `cmux-start-env.txt` next to the calls file, one `NAME=value` line per
+      variable;
+    - `tree ...` with tree, as JSON text or a Python object. The default is `{"windows": []}`;
+    - `surface resume show ... --surface <ref>` with bindings[ref]. The bindings map a surface
+      ref to JSON text or a Python object. A surface that is not in it gets `{}`.
+
+    Every other call prints nothing and exits 0. The keywords fail, fail_after and slow are lists
+    of argument prefixes, such as "local-tmux start". A prefix matches word by word, from the
+    first argument. A call that matches fail prints a line on stderr and exits 1 before it has any
+    effect. A call that matches fail_after does the same after its effect, so a `local-tmux
+    close` removes its entry first. A call that matches slow sleeps one second before it answers.
     """
-    calls = bin_dir.parent / "cmux-calls.txt"
-    groups_file = bin_dir.parent / "cmux-groups.json"
-    groups_file.write_text(groups)
+    root = bin_dir.parent
+    calls = root / "cmux-calls.txt"
+    calls.unlink(missing_ok=True)
+    (root / "cmux-start-env.txt").unlink(missing_ok=True)
+    (root / "cmux-groups.json").write_text(groups)
+    (root / "cmux-sessions.json").write_text(
+        _json_text(sessions if sessions is not None else {"sessions": []})
+    )
+    (root / "cmux-tree.json").write_text(_json_text(tree if tree is not None else {"windows": []}))
+    parsed = {ref: json.loads(_json_text(value)) for ref, value in (bindings or {}).items()}
+    (root / "cmux-bindings.json").write_text(json.dumps(parsed))
+    (root / "cmux-rules.json").write_text(
+        json.dumps({"fail": list(fail), "fail_after": list(fail_after), "slow": list(slow)})
+    )
+    script = root / "cmux-stub.py"
+    script.write_text(_STUB_CMUX)
     write_executable(
         bin_dir / "cmux",
+        f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -I -S {shlex.quote(str(script))} "$@"\n',
+    )
+    return calls
+
+
+def write_stub_tmux(bin_dir: Path, panes: str = "zsh\n", *, code: int = 0) -> Path:
+    """Writes a stub tmux into bin_dir, and returns the file that gets its calls.
+
+    Each call appends one line to the file, with each argument followed by a tab, as the stub
+    cmux does. The stub prints panes, which stands for the `#{pane_current_command}` lines, and
+    exits with code.
+    """
+    calls = bin_dir.parent / "tmux-calls.txt"
+    calls.unlink(missing_ok=True)
+    panes_file = bin_dir.parent / "tmux-panes.txt"
+    panes_file.write_text(panes)
+    write_executable(
+        bin_dir / "tmux",
         "#!/bin/sh\n"
         f'printf \'%s\\t\' "$@" >> "{calls}"\n'
         f'echo >> "{calls}"\n'
-        'case "$1" in\n'
-        f'  workspace-group) cat "{groups_file}" ;;\n'
-        '  workspace) echo \'{"workspace_id": "new-workspace", "surface_id": "new-terminal"}\' ;;\n'
-        '  todo) echo \'{"surface_id": "new-todo"}\' ;;\n'
-        "esac\n",
+        f'cat "{panes_file}"\n'
+        f"exit {code}\n",
     )
     return calls
 
