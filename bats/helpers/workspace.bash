@@ -47,7 +47,7 @@ require_tools() {
 # Builds the bare repository that stands in for GitHub, the stub commands, and an empty
 # workspace folder. It does not run draupnir init, so a test can run init itself.
 #
-# Sets TEST_DIR, REMOTE, SOURCE, ROOT, MAIN, STUB_BIN and BATS_IDEA_LOG.
+# Sets TEST_DIR, REMOTE, SOURCE, ROOT, MAIN, STUB_BIN, BATS_IDEA_LOG and BATS_CMUX_LOG.
 setup_sandbox() {
     local name
     name="$(basename "$BATS_TEST_FILENAME" .bats)"
@@ -93,8 +93,10 @@ _isolate_environment() {
     done
     # draupnir reads the editor of the config from these, so no test may see the real one.
     unset EDITOR VISUAL
-    # The tests may run in a cmux terminal, and must not open workspaces in it.
-    unset CMUX_WORKSPACE_ID
+    # The tests may run in a cmux terminal, and must not open workspaces in it or write a
+    # status into its sidebar. The stub cmux that _write_stubs puts first on the PATH is the
+    # only one they can reach, because cmux puts the real one on the PATH as well.
+    unset CMUX_WORKSPACE_ID CMUX_BUNDLED_CLI_PATH
 
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
@@ -108,6 +110,7 @@ _isolate_environment() {
 EOF
 
     export BATS_IDEA_LOG="$TEST_DIR/idea-calls.txt"
+    export BATS_CMUX_LOG="$TEST_DIR/cmux-calls.txt"
     export BATS_VENV_PYTHON="$VENV_PYTHON"
     export BATS_FAKE_GH="$FAKE_GH"
     export FAKE_GH_STATE="$TEST_DIR/fake-gh-state.json"
@@ -116,7 +119,8 @@ EOF
 _write_stubs() {
     STUB_BIN="$TEST_DIR/bin"
     mkdir -p "$STUB_BIN"
-    cp "$FIXTURES/stubs/mvn" "$FIXTURES/stubs/idea" "$FIXTURES/stubs/gh" "$STUB_BIN/"
+    cp "$FIXTURES/stubs/mvn" "$FIXTURES/stubs/idea" "$FIXTURES/stubs/gh" \
+        "$FIXTURES/stubs/cmux" "$STUB_BIN/"
     chmod +x "$STUB_BIN"/*
     export PATH="$STUB_BIN:$PATH"
 }

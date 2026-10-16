@@ -21,6 +21,7 @@ from helpers import (
     write_stub_cmux,
 )
 
+from draupnir.cmux import GREEN, YELLOW
 from draupnir.operations import push
 from draupnir.setup import new_clone, unsaved_work
 from draupnir.ui.app import DraupnirApp
@@ -597,3 +598,102 @@ async def test_ui_cmux_workspace_opens_the_selected_clone(
 
         create = next(call for call in cmux_calls(calls) if call[:2] == ["workspace", "create"])
         assert create[create.index("--cwd") + 1] == str(feature)
+
+
+async def test_ui_writes_the_status_of_the_clones_into_the_cmux_sidebar(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard publishes one line per workspace into the sidebar of cmux (D52)."""
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        [clean] = [call for call in cmux_calls(calls) if call[0] == "set-status"]
+        assert clean[1:3] == ["draupnir", "clean"]
+        assert clean[clean.index("--color") + 1] == GREEN
+        assert clean[clean.index("--workspace") + 1] == "workspace-1"
+
+        (env.main / "notes.txt").write_text("a local file\n")
+        await pilot.press("r")
+        await settle(app, pilot)
+
+        changed = [call for call in cmux_calls(calls) if call[0] == "set-status"][-1]
+        assert changed[1:3] == ["draupnir", "main is changed"]
+        assert changed[changed.index("--color") + 1] == YELLOW
+
+    # The dashboard takes its line away when it quits.
+    assert [call for call in cmux_calls(calls) if call[0] == "clear-status"] == [
+        ["clear-status", "draupnir", "--workspace", "workspace-1"]
+    ]
+
+
+async def test_ui_writes_the_sidebar_status_once_while_nothing_changes(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        for _ in range(3):
+            await pilot.press("r")
+            await settle(app, pilot)
+
+        assert len([call for call in cmux_calls(calls) if call[0] == "set-status"]) == 1
+
+
+async def test_ui_writes_no_sidebar_status_outside_cmux(env: Env) -> None:
+    calls = write_stub_cmux(env.bin)
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+    assert not calls.exists()
+
+
+async def test_ui_sidebar_status_can_be_turned_off(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    append_config(env.root, "cmux-status = false\n")
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert not app.sidebar_enabled
+
+    assert not calls.exists()
+
+
+async def test_ui_stops_writing_the_sidebar_status_after_cmux_refuses_it(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed write turns the status off, so cmux is not called again on every refresh."""
+    calls = env.tmp / "cmux-calls.txt"
+    write_executable(
+        env.bin / "cmux",
+        "#!/bin/sh\n"
+        f'printf \'%s\\t\' "$@" >> "{calls}"\n'
+        f'echo >> "{calls}"\n'
+        'echo "no workspace with that id" >&2\n'
+        "exit 1\n",
+    )
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("r")
+        await settle(app, pilot)
+
+        assert not app.sidebar_enabled
+        assert len(cmux_calls(calls)) == 1
+        text = " ".join(_output_lines(app))
+        assert "cmux refused the status of this workspace: no workspace with that id." in text
+        assert "draupnir does not write the status again." in text

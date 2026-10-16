@@ -15,6 +15,9 @@ clone. Every dashboard action is also a subcommand.
   `gh auth login --hostname github.example.com` for GitHub Enterprise Server).
 - [uv](https://docs.astral.sh/uv/). It installs Python and the dependencies.
 - For Maven projects: Maven 3.9.0 or newer, or a `mvnw` wrapper of that version.
+- For the cmux features, the `cmux` command line tool. A terminal that cmux started already has
+  it on the `PATH`. In every other terminal, open cmux, press `⌘ ⇧ P` and run
+  `Shell Command: Install 'cmux' in PATH`.
 - macOS, Linux or WSL. Native Windows is not supported.
 
 ## Install
@@ -49,6 +52,26 @@ shop/
 uv run --project [path to local checkout] draupnir init 
 ```
 
+
+### The status in the cmux sidebar
+
+A dashboard that runs in cmux writes one line about its clones into the sidebar row of its own
+workspace. You see which project needs you without opening its dashboard:
+
+```
+rebase in feature-login               red, something stops the work
+2 clones are changed                  yellow, unfinished work
+clean                                 green, every clone is clean and in sync
+```
+
+The line carries an icon of its own, so you can tell it from the lines cmux writes itself.
+
+Red covers an operation in progress, a failed build of the current commit, and a clone draupnir
+cannot read. Yellow covers local changes, commits that are not on GitHub, and a branch GitHub no
+longer has. The line holds the three most important parts, worst first. draupnir writes it again
+only when it changes, and takes it away when the dashboard quits.
+
+Set `cmux-status = false` under `[ui]` in `draupnir.toml` to turn it off.
 
 ### Restart the dashboards after cmux relaunches
 

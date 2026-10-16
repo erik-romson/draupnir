@@ -7,6 +7,22 @@ repository. Read these first:
 - `docs/requirements.md`: the requirements, R1 to R24.
 - `docs/decisions.md`: why the design is the way it is. Do not reopen a decision without a reason.
 
+## Where the session runs
+
+Run the Claude Code session in a cmux terminal. draupnir talks to cmux, and the cmux command line
+tool answers only a process that cmux started: every other process gets `Access denied - only
+processes started inside cmux can connect`. A session outside cmux can read the code and run the
+tests, but it cannot see what draupnir does to a workspace, a sidebar status or a terminal.
+
+The `cmux` command line tool has to be on the `PATH`. A terminal that cmux started already has
+it. In every other terminal, open cmux, press `⌘ ⇧ P` and run
+`Shell Command: Install 'cmux' in PATH`.
+
+Inside cmux, use only the commands that read, such as `cmux top`, `cmux tree`,
+`cmux list-workspaces` and `cmux list-status`. Ask first before a command that changes the
+desktop, because the desktop is the user's own. Never use `cmux send` or `cmux send-key`: they
+type into a terminal that may be busy.
+
 ## Quality gate
 
 Every change ends with this gate green:
@@ -36,8 +52,8 @@ bats bats/
    Its first line must make sense alone, because the dashboard shows it in a notification.
 5. **Checks before actions.** An action that changes a clone refuses while a rebase, merge,
    cherry-pick, revert or `git am` is in progress, and names it.
-6. **Module boundaries.** Only `src/draupnir/ui/` imports Textual. Only `config.py` and `ide.py`
-   read the environment.
+6. **Module boundaries.** Only `src/draupnir/ui/` imports Textual. Only `config.py`, `ide.py`
+   and `cmux.py` read the environment.
 7. **No project or company names.** The repository is public. Code, tests and docs use a neutral
    example: a Java and Maven project called `shop` on `github.example.com`. The bare test
    repository is `project.git`.

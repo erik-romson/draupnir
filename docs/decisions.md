@@ -192,6 +192,36 @@ to the terminal, so draupnir moves it into a pane below with `cmux split-off` an
 the focus back. When that fails, the workspace stays open without the todo list. The commands
 go through `runner.run` and ask nothing. draupnir reads only the JSON output.
 
+**D51. One module for cmux, and a found command.** `cmux.py` holds everything that talks to
+cmux, so the dashboard and later tools share it and `ide.py` is only about the IDE. The tool is
+looked up as `DRAUPNIR_CMUX`, then `cmux` on `PATH`, then `CMUX_BUNDLED_CLI_PATH`, which cmux sets
+in every terminal it starts, then the tool in `/Applications/cmux.app`. The `PATH` comes before the
+variable from cmux, so a `cmux` that a test or a user put there still wins. Before this, draupnir
+ran the bare name `cmux`, which only works inside a cmux terminal. Finding the tool does not make
+it usable everywhere: its socket answers `Access denied - only processes started inside cmux can
+connect` to a process that cmux did not start, unless a socket password is set. So every cmux
+command still needs a draupnir that runs inside cmux, and the found path only helps a terminal
+whose PATH does not hold the tool.
+
+**D52. The dashboard writes its state into the cmux sidebar.** After every status read, the
+dashboard writes one line into the sidebar row of its own cmux workspace, with
+`cmux set-status draupnir "<line>" --icon <symbol> --color <hex> --priority <n> --workspace <id>`.
+A user who works on many projects then sees which of them needs attention in the sidebar they
+already look at, without opening a dashboard. The line has three levels: red for what stops work,
+which is an operation in progress, a failed build of the current commit and a clone that cannot
+be read; yellow for unfinished work, which is local changes, commits that are not on GitHub and a
+branch GitHub no longer has; green when every clone is clean. A merged branch is yellow and not
+red, because it asks for a cleanup and does not block anything. The line holds at most three
+parts, worst first, because a narrow sidebar cuts it off. The workspace is always named, so the
+line stays on the dashboard's own row when the user has switched to another workspace. The same
+line is never written twice, so a quiet dashboard calls cmux once. The call runs in a worker
+thread and never raises: one failure turns the status off for the session and says so once in the
+output, and `ui.cmux-status = false` turns it off for good. The line carries one icon,
+`arrow.triangle.branch`, so a user tells draupnir's line from the ones cmux writes itself, which
+cmux marks with icons of its own. The icon is the same at every level, because the colour already
+carries the level. It names a symbol of the system, and cmux does not check the name, so a name
+that does not exist simply draws nothing.
+
 **D26. The dashboard refreshes on a timer.** Every `ui.refresh-seconds`. The timer never fetches,
 and skips a read while an action or another read runs.
 

@@ -12,15 +12,14 @@ from conftest import Env
 from helpers import cmux_calls, logger, sh, write_stub_cmux
 
 from draupnir.cli import main
+from draupnir.cmux import in_cmux, open_cmux_workspace
 from draupnir.config import Config, IdeConfig
 from draupnir.errors import OperationError
 from draupnir.ide import (
     editor_command,
     ide_command,
     ide_kind,
-    in_cmux,
     name_project,
-    open_cmux_workspace,
     open_ide,
 )
 

@@ -17,6 +17,12 @@ from draupnir.github import reset_build_estimate_cache, reset_login_cache
 from draupnir.setup import init
 from draupnir.workspace import Workspace
 
+# The folders the stubs are joined with to make the PATH of a test. The PATH of the session
+# that runs the tests is left out on purpose: inside a cmux terminal it holds the real cmux,
+# which cmux puts there itself, and a test that found it would call the user's own desktop.
+# These folders hold git, and the shell the stubs are written in.
+_SYSTEM_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
 
 def _sh(cwd: Path, *args: str) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
@@ -70,11 +76,17 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     # The editor of the config comes from the environment, so no test may see the real one.
     for name in ("EDITOR", "VISUAL"):
         monkeypatch.delenv(name, raising=False)
-    # The tests may run in a cmux terminal, and must not open workspaces in it.
+    # The tests may run in a cmux terminal, and must not open workspaces in it or write a
+    # status into its sidebar. No cmux is reachable unless a test writes one with
+    # write_stub_cmux: the two variables go away, the PATH below holds no cmux, and the last
+    # place cmux_command looks, the folder of the macOS app, is a fixed path that is pointed
+    # at a folder that does not exist.
     monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    monkeypatch.delenv("CMUX_BUNDLED_CLI_PATH", raising=False)
+    monkeypatch.setattr("draupnir.cmux._BUNDLED_COMMAND", tmp_path / "no-cmux-installed")
 
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), *_SYSTEM_PATH]))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
     monkeypatch.setenv(STATE_VARIABLE, str(gh_state))
 

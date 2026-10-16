@@ -15,6 +15,7 @@ src/draupnir/
   github.py       gh login check, build state, waiting for builds, pull requests
   operations.py   fetch, rebase, push, fast-forward main, the pull request flow
   ide.py          finds and starts IntelliJ IDEA, Android Studio or PyCharm
+  cmux.py         finds the cmux tool, opens cmux workspaces, writes the sidebar status
   ui/
     app.py        the Textual app: tabs, key bindings, running one action at a time
     projects.py   the Projects tab
@@ -31,7 +32,7 @@ The CLI and the dashboard call the same functions. Only `ui/` imports Textual.
   for the user when it stops.
 - A function that waits takes `cancel: threading.Event`.
 - `setup.py` and `operations.py` take a `Workspace`, which holds the `Config`.
-- Only `config.py` and `ide.py` read the environment.
+- Only `config.py`, `ide.py` and `cmux.py` read the environment.
 
 ## Running commands
 
@@ -63,6 +64,10 @@ Two suites test draupnir. `AGENTS.md` says which suite a change needs.
   call log;
 - stubs for `mvn` and `idea` sit on `PATH`;
 - `HOME`, `GIT_CONFIG_GLOBAL` and `PATH` are replaced, and `DRAUPNIR_*` variables are removed.
+  The `PATH` is built from the stub folder and the system folders, and not from the `PATH` of the
+  session that runs the tests. A cmux terminal has the real cmux on its `PATH`, and a test that
+  found it would call the user's own desktop. A test that needs a cmux writes a stub with
+  `write_stub_cmux`.
 
 `tests/helpers.py` holds typed helpers such as `commit`, `push_from_other_clone` and `logger`.
 
@@ -96,7 +101,7 @@ bats/
 ```
 
 `setup_workspace` in the helper builds one sandbox per test under `tmp/batstest/`: the bare
-repository `project.git`, stubs for `mvn`, `idea` and `gh` on `PATH`, its own `HOME` and git
+repository `project.git`, stubs for `mvn`, `idea`, `gh` and `cmux` on `PATH`, its own `HOME` and git
 config, and a workspace that `draupnir init` has set up. The sandbox stays behind after a
 failure, so the workspace of a failed test can be looked at.
 

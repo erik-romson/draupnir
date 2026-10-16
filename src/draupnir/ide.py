@@ -1,20 +1,17 @@
-"""Finds and starts IntelliJ IDEA, Android Studio or PyCharm in a clone (R13), the editor for
-the config, and cmux workspaces."""
+"""Finds and starts IntelliJ IDEA, Android Studio or PyCharm in a clone (R13), and the editor
+for the config."""
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import cast
 
 from draupnir.config import Config
 from draupnir.errors import OperationError
-from draupnir.runner import CMUX_TIMEOUT_SECONDS, LogFn, run
 from draupnir.setup import exclude_from_git
 
 _MAC_APPS = {
@@ -25,9 +22,6 @@ _MAC_APPS = {
 
 # The variables that hold the editor of the config file, in the order they are read.
 _EDITOR_VARIABLES = ("DRAUPNIR_EDITOR", "VISUAL", "EDITOR")
-
-# cmux sets this variable in every terminal it starts.
-_CMUX_VARIABLE = "CMUX_WORKSPACE_ID"
 
 _NAMES = {"idea": "IntelliJ IDEA", "studio": "Android Studio", "pycharm": "PyCharm"}
 _VARIABLES = {"idea": "DRAUPNIR_IDEA", "studio": "DRAUPNIR_STUDIO", "pycharm": "DRAUPNIR_PYCHARM"}
@@ -229,120 +223,3 @@ def open_ide(folder: Path, config: Config) -> str:
             f"Check {_VARIABLES[kind]} or {_CONFIG_KEYS[kind]} in draupnir.toml."
         ) from exc
     return shlex.join(command)
-
-
-def in_cmux() -> bool:
-    """True when draupnir runs in a cmux terminal, so it can open cmux workspaces."""
-    return bool(os.environ.get(_CMUX_VARIABLE))
-
-
-def _cmux_json(args: list[str | Path], folder: Path, log: LogFn) -> dict[str, object]:
-    """Runs a cmux command that answers with JSON, and returns the object it prints.
-
-    The command line goes to log. The JSON is read from stdout alone, because cmux prints
-    notices on stderr.
-
-    Raises OperationError when the command fails or does not print a JSON object.
-    """
-    command = ["cmux", *(str(arg) for arg in args), "--json", "--id-format", "both"]
-    log(f"$ {shlex.join(command)}")
-    result = run(command, folder, timeout=CMUX_TIMEOUT_SECONDS)
-    try:
-        parsed: object = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        parsed = None
-    if not isinstance(parsed, dict):
-        raise OperationError(
-            f"{shlex.join(command)} did not answer with JSON. Check that cmux is up to date, "
-            "and try again."
-        )
-    return cast(dict[str, object], parsed)
-
-
-def _text(fields: dict[str, object], key: str) -> str | None:
-    value = fields.get(key)
-    return value if isinstance(value, str) else None
-
-
-def _cmux_group(workspace_id: str, folder: Path, log: LogFn) -> str | None:
-    """The id of the sidebar group that holds the cmux workspace, or None when it has none.
-
-    When cmux cannot list the groups, the workspace counts as ungrouped, because a new
-    workspace outside the group is still useful.
-    """
-    try:
-        listed = _cmux_json(["workspace-group", "list"], folder, log)
-    except OperationError:
-        return None
-    groups = listed.get("groups")
-    for group in cast(list[object], groups) if isinstance(groups, list) else []:
-        if not isinstance(group, dict):
-            continue
-        fields = cast(dict[str, object], group)
-        members = fields.get("member_workspace_ids")
-        if isinstance(members, list) and workspace_id in members:
-            return _text(fields, "id")
-    return None
-
-
-def _add_todo_pane(workspace: str, terminal: str, folder: Path, log: LogFn) -> None:
-    """Opens the todo list of the cmux workspace in a pane below its terminal.
-
-    cmux opens the todo list as a tab next to the terminal, so it is split off into its own
-    pane. Then the terminal gets the focus back.
-    """
-    opened = _cmux_json(["todo", "open", "--workspace", workspace], folder, log)
-    todo = _text(opened, "surface_id")
-    if todo is None:
-        return
-    for command in (
-        ["split-off", "--surface", todo, "down", "--workspace", workspace, "--focus", "false"],
-        ["focus-panel", "--panel", terminal, "--workspace", workspace],
-    ):
-        run(["cmux", *command], folder, log=log, timeout=CMUX_TIMEOUT_SECONDS)
-
-
-def open_cmux_workspace(folder: Path, log: LogFn) -> None:
-    """Opens a new cmux workspace with a shell in folder and its todo list below, and switches
-    to it.
-
-    The workspace gets the name from project_name. When the workspace that draupnir runs in
-    belongs to a sidebar group, the new workspace joins that group, right after it. Otherwise
-    cmux adds it to the window that draupnir runs in. When the todo list cannot be added, the
-    workspace stays open without it.
-
-    Raises OperationError when cmux is not found or refuses the workspace.
-    """
-    command: list[str | Path] = [
-        "workspace",
-        "create",
-        "--name",
-        project_name(folder),
-        "--cwd",
-        folder,
-        "--focus",
-        "true",
-    ]
-    caller = os.environ.get(_CMUX_VARIABLE)
-    group = _cmux_group(caller, folder, log) if caller else None
-    if caller and group:
-        command += [
-            "--group",
-            group,
-            "--group-placement",
-            "afterCurrent",
-            "--group-reference",
-            caller,
-        ]
-    created = _cmux_json(command, folder, log)
-    workspace = _text(created, "workspace_id")
-    terminal = _text(created, "surface_id")
-    if workspace is None or terminal is None:
-        return
-    try:
-        _add_todo_pane(workspace, terminal, folder, log)
-    except OperationError as exc:
-        log(
-            "The workspace is open, but draupnir could not add the todo list below the "
-            f"terminal: {str(exc).splitlines()[0]}"
-        )

@@ -52,6 +52,8 @@ offer-remove-after-merge = true
 [ui]
 # Read the status again after this many seconds. 0 turns it off. The timer never fetches.
 refresh-seconds = 10
+# Write one line about the clones into the sidebar of cmux. Only acts inside cmux.
+cmux-status = true
 
 [ide]
 # Commands that start the IDE. Default: idea, studio and pycharm from PATH, JetBrains
@@ -94,6 +96,7 @@ These hold values that differ per machine, so they are never committed.
 | `DRAUPNIR_PYCHARM` | The command that starts PyCharm. It wins over `ide.python`. |
 | `DRAUPNIR_EDITOR` | The command that opens `draupnir.toml` from the dashboard. It wins over `VISUAL` and `EDITOR`. |
 | `DRAUPNIR_MAVEN_SHARED_REPO` | The shared Maven repository, when it is not `~/.m2/repository`. |
+| `DRAUPNIR_CMUX` | The command that runs the cmux command line tool. It wins over the tool on `PATH` and over `CMUX_BUNDLED_CLI_PATH`. |
 
 ## Following a build
 

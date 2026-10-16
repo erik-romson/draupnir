@@ -48,6 +48,7 @@ class ActionsConfig:
 @dataclass(frozen=True)
 class UiConfig:
     refresh_seconds: float = 10
+    cmux_status: bool = True
 
 
 @dataclass(frozen=True)
@@ -211,14 +212,17 @@ def _load_actions(data: dict[str, Any]) -> ActionsConfig:
 
 
 def _load_ui(data: dict[str, Any]) -> UiConfig:
-    _check_keys("ui", data, ["refresh-seconds"])
+    _check_keys("ui", data, ["refresh-seconds", "cmux-status"])
     value = _number("ui", "refresh-seconds", data, 10)
     if value < 0:
         raise OperationError(
             f"{CONFIG_FILE_NAME} has 'ui.refresh-seconds' set to {value}, but it must be zero "
             "or a positive number. Zero turns the timer off."
         )
-    return UiConfig(refresh_seconds=value)
+    return UiConfig(
+        refresh_seconds=value,
+        cmux_status=_bool("ui", "cmux-status", data, True),
+    )
 
 
 def _load_ide(data: dict[str, Any]) -> IdeConfig:

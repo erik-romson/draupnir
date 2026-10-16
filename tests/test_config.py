@@ -27,6 +27,7 @@ def test_empty_config_gives_defaults(tmp_path: Path) -> None:
     assert config.actions.fast_forward_needs_green_build is True
     assert config.actions.offer_remove_after_merge is True
     assert config.ui.refresh_seconds == 10
+    assert config.ui.cmux_status is True
     assert config.ide.java is None
     assert config.ide.android is None
     assert config.ide.python is None
@@ -57,6 +58,7 @@ offer-remove-after-merge = false
 
 [ui]
 refresh-seconds = 2
+cmux-status = false
 
 [ide]
 java = "idea-custom"
@@ -79,6 +81,7 @@ python = "pycharm-custom"
     assert config.actions.fast_forward_needs_green_build is False
     assert config.actions.offer_remove_after_merge is False
     assert config.ui.refresh_seconds == 2
+    assert config.ui.cmux_status is False
     assert config.ide.java == "idea-custom"
     assert config.ide.android == "studio-custom"
     assert config.ide.python == "pycharm-custom"

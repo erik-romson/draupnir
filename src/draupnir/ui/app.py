@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import threading
 import traceback
@@ -14,10 +15,18 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
+from draupnir.cmux import (
+    SidebarStatus,
+    clear_sidebar_status,
+    in_cmux,
+    open_cmux_workspace,
+    set_sidebar_status,
+    sidebar_status,
+)
 from draupnir.config import CONFIG_FILE_NAME
 from draupnir.errors import OperationError, RebaseConflict
 from draupnir.github import CANCELLED, SUCCESS, BuildState, build_result_message
-from draupnir.ide import editor_command, in_cmux, open_cmux_workspace, open_ide
+from draupnir.ide import editor_command, open_ide
 from draupnir.operations import (
     MERGED,
     PrOutcome,
@@ -105,6 +114,11 @@ class DraupnirApp(App[None]):
         self.cancel_event = threading.Event()
         # True while a status read runs in a worker thread.
         self.reading = False
+        # The last line written into the cmux sidebar, so the same line is not written twice.
+        self.sidebar_shows: SidebarStatus | None = None
+        # The sidebar status is turned off after one failed write, so a cmux that refuses it
+        # is not called again every refresh.
+        self.sidebar_enabled = in_cmux() and ws.config.ui.cmux_status
         self._read_again = False
         self._last_read_error: str | None = None
 
@@ -154,6 +168,11 @@ class DraupnirApp(App[None]):
         # A thread worker cannot be cancelled from outside. Ending a wait for a build here lets
         # the dashboard quit at once, and the build on GitHub keeps running.
         self.cancel_event.set()
+        if self.sidebar_enabled and self.sidebar_shows is not None:
+            # The dashboard is the only writer of its line, so it takes the line away when it
+            # quits. This runs while the app stops, so a worker thread is no longer an option.
+            with contextlib.suppress(OperationError):
+                clear_sidebar_status(self.ws.root)
 
     # ----- Reading the status -----------------------------------------------------------
 
@@ -192,6 +211,7 @@ class DraupnirApp(App[None]):
         self._last_read_error = None
         self.statuses = statuses
         self.projects.show_statuses(statuses, self.builds, self.busy)
+        self.publish_sidebar_status()
 
     def _status_read_failed(self, message: str) -> None:
         # The timer reads again and again, so the same failure is shown only once.
@@ -211,6 +231,48 @@ class DraupnirApp(App[None]):
         if self._read_again:
             self._read_again = False
             self.request_status_read()
+
+    # ----- The status in the cmux sidebar -----------------------------------------------
+
+    def publish_sidebar_status(self) -> None:
+        """Writes one line about the clones into the sidebar row of the cmux workspace (D52).
+
+        It runs only in cmux, and only when ui.cmux-status is on. The same line is never
+        written twice, so a dashboard that does not change calls cmux once.
+        """
+        if not self.sidebar_enabled:
+            return
+        status = sidebar_status(self.statuses, self.builds)
+        if status is None or status == self.sidebar_shows:
+            return
+        self.sidebar_shows = status
+        self._write_sidebar_status(status)
+
+    @work(thread=True, group="sidebar-status", exit_on_error=False)
+    def _write_sidebar_status(self, status: SidebarStatus) -> None:
+        """Calls cmux in a worker thread, so a slow answer never holds up the dashboard."""
+        try:
+            result = set_sidebar_status(status, self.ws.root)
+        except OperationError as exc:
+            self._call_ui(self._sidebar_status_failed, str(exc))
+            return
+        if result.code != 0:
+            lines = (result.stderr or result.stdout).strip().splitlines()
+            reason = lines[0] if lines else "it gave no reason"
+            self._call_ui(
+                self._sidebar_status_failed,
+                f"cmux refused the status of this workspace: {reason}.",
+            )
+
+    def _sidebar_status_failed(self, message: str) -> None:
+        """Turns the sidebar status off after the first failure, and says so once."""
+        self.sidebar_enabled = False
+        self.sidebar_shows = None
+        self.output.write_line(
+            f"{message} draupnir does not write the status again. Set ui.cmux-status to false "
+            "in draupnir.toml to turn it off for good.",
+            "yellow",
+        )
 
     # ----- Running actions ------------------------------------------------------------
 
@@ -608,6 +670,7 @@ class DraupnirApp(App[None]):
         """Remembers state as the last known build of the clone called name, and shows it."""
         self.builds[name] = state
         self.projects.show_statuses(self.statuses, self.builds, self.busy)
+        self.publish_sidebar_status()
 
     def _build_recorder(self, name: str) -> BuildCallback:
         """A callback for a worker thread, that records every build state it gets for name."""

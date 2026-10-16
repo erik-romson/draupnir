@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stands in for the cmux command line tool, so a test can never reach the cmux of the
+# user's own desktop. Each call appends its arguments to the log file, and the calls that
+# draupnir reads an answer from get one.
+printf '%s\t' "$@" >> "$BATS_CMUX_LOG"
+echo >> "$BATS_CMUX_LOG"
+case "$1" in
+  workspace-group) echo '{"groups": []}' ;;
+  workspace) echo '{"workspace_id": "new-workspace", "surface_id": "new-terminal"}' ;;
+  todo) echo '{"surface_id": "new-todo"}' ;;
+esac
