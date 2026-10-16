@@ -1050,3 +1050,211 @@ def test_new_parser_reads_the_workspace_flag() -> None:
     assert parser.parse_args(["new", "x"]).workspace is None
     assert parser.parse_args(["new", "x", "--workspace"]).workspace is True
     assert parser.parse_args(["new", "x", "--no-workspace"]).workspace is False
+
+
+# ----- draupnir remove closes the workspace of the clone (W5) ------------------------------------
+
+_BOUND_SURFACE = "surface-bound"
+
+
+def _clone_workspace_fixture(
+    clone: Path, *others: tuple[str, str]
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The tree and the bindings of the workspace that W2 makes, with workspace id ws-b.
+
+    The bound terminal is in one pane, and the todo pane is in a pane below it. Each pair in
+    others is the id and the type of a surface in a pane of its own.
+    """
+
+    def surface(surface_id: str, kind: str) -> dict[str, object]:
+        return {"id": surface_id, "ref": f"ref-{surface_id}", "type": kind}
+
+    panes = [
+        {"surfaces": [surface(_BOUND_SURFACE, "terminal")]},
+        {"surfaces": [surface("surface-todo", "workspaceTodo")]},
+        *({"surfaces": [surface(sid, kind)]} for sid, kind in others),
+    ]
+    title = f"{clone.parent.name} {clone.name}"
+    tree: dict[str, object] = {
+        "windows": [
+            {"workspaces": [{"id": "ws-b", "ref": "workspace-b", "title": title, "panes": panes}]}
+        ]
+    }
+    binding = {
+        "resume_binding": {
+            "launch_command": {
+                "arguments": ["cmux", "local-tmux", "attach", session_name(clone), "--headless"]
+            },
+            "cwd": str(clone),
+        }
+    }
+    return tree, {f"ref-{_BOUND_SURFACE}": binding}
+
+
+def _workspace_closes(calls: Path) -> list[list[str]]:
+    if not calls.exists():
+        return []
+    return [call for call in cmux_calls(calls) if call[:2] == ["workspace", "close"]]
+
+
+def _log_rmtree(monkeypatch: pytest.MonkeyPatch, calls: Path) -> None:
+    real_rmtree = shutil.rmtree
+
+    def logged_rmtree(path: Path) -> None:
+        with calls.open("a") as handle:
+            handle.write("rmtree\n")
+        real_rmtree(path)
+
+    monkeypatch.setattr(shutil, "rmtree", logged_rmtree)
+
+
+def test_remove_in_cmux_closes_the_workspace_then_the_session_then_deletes(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone)
+    calls = write_stub_cmux(
+        env.bin, sessions={"sessions": [_running_entry(clone)]}, tree=tree, bindings=bindings
+    )
+    _in_cmux(monkeypatch)
+    _log_rmtree(monkeypatch, calls)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    assert code == 0
+    assert not clone.exists()
+    writes = [
+        call
+        for call in cmux_calls(calls)
+        if call[:3] == ["surface", "resume", "clear"]
+        or call[:2] in (["workspace", "close"], ["local-tmux", "close"])
+        or call == ["rmtree"]
+    ]
+    assert writes == [
+        ["surface", "resume", "clear", "--workspace", "ws-b", "--surface", _BOUND_SURFACE],
+        ["workspace", "close", "ws-b"],
+        ["local-tmux", "close", "shop-feature-a"],
+        ["rmtree"],
+    ]
+
+
+@pytest.mark.parametrize("kind", ["terminal", "browser", "markdown"])
+def test_remove_in_cmux_leaves_a_workspace_with_another_tab_open(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone, ("surface-other", kind))
+    calls = write_stub_cmux(
+        env.bin, sessions={"sessions": [_running_entry(clone)]}, tree=tree, bindings=bindings
+    )
+    _in_cmux(monkeypatch)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_closes(calls) == []
+    assert "has other tabs, so draupnir left it open." in out
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+    assert not clone.exists()
+
+
+def test_remove_in_cmux_with_an_unreadable_workspace_list_still_closes_the_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone)
+    calls = write_stub_cmux(
+        env.bin,
+        sessions={"sessions": [_running_entry(clone)]},
+        tree=tree,
+        bindings=bindings,
+        fail=["tree"],
+    )
+    _in_cmux(monkeypatch)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_closes(calls) == []
+    assert "so it left any workspace of feature-a open." in out
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+    assert not clone.exists()
+
+
+def test_remove_leaves_the_workspace_that_draupnir_runs_in_open(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone)
+    calls = write_stub_cmux(
+        env.bin, sessions={"sessions": [_running_entry(clone)]}, tree=tree, bindings=bindings
+    )
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "ws-b")
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_closes(calls) == []
+    assert "draupnir runs in the cmux workspace" in out
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+
+
+def test_remove_closes_neither_when_draupnir_runs_in_the_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone)
+    entry = _running_entry(clone)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [entry]}, tree=tree, bindings=bindings)
+    _in_cmux(monkeypatch)
+    monkeypatch.setenv("TMUX", f"{entry['socket_path']},4242,0")
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert _workspace_closes(calls) == []
+    assert _closes(calls) == []
+    assert "so it left the cmux workspace" in out
+    assert "Type exit" in out
+
+
+def test_remove_outside_cmux_closes_the_session_and_says_it_cannot_close_the_workspace(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert [call for call in cmux_calls(calls) if call[0] == "tree"] == []
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+    assert "so it cannot close a cmux workspace of feature-a." in out
+
+
+def test_remove_deletes_the_clone_when_the_workspace_cannot_be_closed(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    tree, bindings = _clone_workspace_fixture(clone)
+    calls = write_stub_cmux(
+        env.bin,
+        sessions={"sessions": [_running_entry(clone)]},
+        tree=tree,
+        bindings=bindings,
+        fail=["workspace close"],
+    )
+    _in_cmux(monkeypatch)
+
+    code = main(["-C", str(env.root), "remove", "feature-a", "--yes"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "draupnir could not close the cmux workspace" in out
+    assert _closes(calls) == [["local-tmux", "close", "shop-feature-a"]]
+    assert not clone.exists()

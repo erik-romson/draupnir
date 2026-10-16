@@ -964,13 +964,13 @@ def close_session(folder: Path, log: LogFn) -> None:
     an OperationError: a session that stays open must not stop the removal of the clone.
     """
     try:
-        _close_session(folder, log)
+        _close_session(folder, read_session(folder, log), log)
     except OperationError as exc:
         log(_first_line(str(exc)))
 
 
-def _close_session(folder: Path, log: LogFn) -> None:
-    session = read_session(folder, log)
+def _close_session(folder: Path, session: TerminalSession, log: LogFn) -> None:
+    """Closes session, which read_session has just read for folder."""
     if session.state == "absent":
         return
     if session.state == "foreign":
@@ -1120,17 +1120,85 @@ def close_clone_terminal(folder: Path, log: LogFn) -> None:
 
     remove_clone calls it after the checks passed and before the delete, so a program in the
     session cannot write into the folder while it goes. Without a cmux command line tool it says
-    nothing. What it cannot close is logged, and the removal goes on.
+    nothing. It closes the clone's cmux workspace first when that holds nothing but draupnir's
+    own tabs (rule W5), and then the session. What it cannot close is logged, and the removal
+    goes on. The session is read once, and both parts use that state.
     """
     try:
         if cmux_command() is None:
             return
-        close_session(folder, log)
+        session = read_session(folder, log)
+        own_session = session.state in ("running", "stopped")
+        if in_cmux():
+            _close_clone_workspace(folder, session, log)
+        elif own_session:
+            log(
+                f"draupnir does not run in a cmux terminal, so it cannot close a cmux workspace "
+                f"of {folder.name}. Close it in cmux if there is one."
+            )
+        # The session closes in every case, also after a workspace that stayed open.
+        try:
+            _close_session(folder, session, log)
+        except OperationError as exc:
+            log(_first_line(str(exc)))
     # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
     # draupnir, and the tests must see it. These three are what the outside world can cause: a
     # cmux that refuses, a folder that went away, or output that does not parse.
     except (OperationError, OSError, ValueError) as exc:
         log(_first_line(str(exc)))
+
+
+def _close_clone_workspace(folder: Path, session: TerminalSession, log: LogFn) -> None:
+    """Closes the cmux workspace of the clone, or logs why it stays open (rule W5).
+
+    The workspace closes only when it holds nothing but the clone's terminal and the todo pane
+    that draupnir added. It never closes the workspace that draupnir runs in. The caller has
+    checked in_cmux.
+    """
+    found = find_clone_workspace(folder, log)
+    if found.outcome == "unreadable":
+        log(
+            "draupnir could not read the cmux workspaces, so it left any workspace of "
+            f"{folder.name} open. Close it in cmux if there is one."
+        )
+        if found.failure:
+            log(found.failure)
+        return
+    if found.outcome == "absent" or found.workspace_id is None or found.surface_id is None:
+        return
+    if session.state == "running" and runs_in_session(session):
+        log(
+            f"draupnir runs in the terminal session {session.name}, so it left the cmux "
+            f"workspace {found.title} open."
+        )
+        return
+    if found.workspace_id == os.environ.get(_CMUX_VARIABLE):
+        log(f"draupnir runs in the cmux workspace {found.title}, so it left it open.")
+        return
+    if found.other_tabs:
+        log(
+            f"The cmux workspace {found.title} has other tabs, so draupnir left it open. Close "
+            "it in cmux when you are done."
+        )
+        return
+    try:
+        _run_cmux(
+            [
+                "surface",
+                "resume",
+                "clear",
+                "--workspace",
+                found.workspace_id,
+                "--surface",
+                found.surface_id,
+            ],
+            folder.parent,
+            log,
+        )
+        _run_cmux(["workspace", "close", found.workspace_id], folder.parent, log)
+    except CommandError as exc:
+        log(f"draupnir could not close the cmux workspace {found.title}. Close it in cmux.")
+        log(_first_line(exc.output) or _first_line(str(exc)))
 
 
 def _one_or_count(names: Sequence[str], one: str, many: str) -> list[str]:
