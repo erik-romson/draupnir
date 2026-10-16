@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import re
 import sys
+import unicodedata
+from pathlib import Path
 
 import pytest
 from conftest import Env
-from helpers import FakeStdin, sh
+from helpers import FakeStdin, cmux_calls, sh, write_stub_cmux
 
 from draupnir import __version__
 from draupnir.cli import confirm, main
+from draupnir.cmux import attach_line, session_name
 from draupnir.errors import OperationError
+from draupnir.setup import new_clone
 from draupnir.ui.app import DraupnirApp
 
 
@@ -32,6 +37,7 @@ def test_help_lists_every_subcommand(capsys: pytest.CaptureFixture[str]) -> None
         "ff-main",
         "pr",
         "open",
+        "attach",
     ):
         assert name in out
 
@@ -184,3 +190,177 @@ def test_ui_outside_a_workspace_stops_before_the_app_starts(
 
     assert started == []
     assert "No workspace found" in capsys.readouterr().err
+
+
+# ----- draupnir attach ----------------------------------------------------------------------
+
+
+def _attach_clone(env: Env, branch: str = "feature-a", folder: str | None = None) -> Path:
+    return new_clone(env.ws(), branch, None, lambda _line: None, folder)
+
+
+def _running_entry(folder: Path, **changes: object) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "session_name": session_name(folder),
+        "cwd": str(folder.resolve()),
+        "live": True,
+        "socket_path": "/tmp/tmux-test/default",
+        "session_id": "$0",
+        "clients": 0,
+    }
+    fields.update(changes)
+    return fields
+
+
+def _starts(calls: Path) -> list[list[str]]:
+    # The stub writes its log with the first call, so a run that never called cmux has none.
+    if not calls.exists():
+        return []
+    return [call for call in cmux_calls(calls) if call[:2] == ["local-tmux", "start"]]
+
+
+def test_attach_starts_the_session_and_prints_the_line(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(clone), "attach", "feature-a"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == attach_line(clone) + "\n"
+    assert "local-tmux start" in captured.err
+    assert _starts(calls) == [
+        ["local-tmux", "start", "shop-feature-a", "--cwd", str(clone.resolve()), "--detached"]
+    ]
+
+
+def test_attach_does_not_start_a_session_that_runs(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    assert code == 0
+    assert capsys.readouterr().out == attach_line(clone) + "\n"
+    assert _starts(calls) == []
+
+
+def test_attach_without_a_folder_uses_the_clone_that_holds_the_current_folder(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_cmux(env.bin)
+    inside = clone / "src"
+    inside.mkdir()
+    monkeypatch.chdir(inside)
+
+    code = main(["attach"])
+
+    assert code == 0
+    assert capsys.readouterr().out == attach_line(clone) + "\n"
+
+
+def test_attach_to_a_folder_that_is_no_clone_exits_with_one(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _attach_clone(env)
+    calls = write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", "typo"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "typo" in captured.err
+    assert "is not a clone of this workspace" in captured.err
+    assert _starts(calls) == []
+
+
+def test_attach_to_main_uses_the_session_name_of_main(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", "main"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == attach_line(env.main) + "\n"
+    assert out.strip().endswith("local-tmux attach shop-main --headless")
+
+
+def test_attach_finds_a_folder_that_macos_stores_in_another_unicode_form(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nfd = unicodedata.normalize("NFD", "fiks-båt")
+    nfc = unicodedata.normalize("NFC", "fiks-båt")
+    assert nfd != nfc
+    clone = _attach_clone(env, "fiks-baat", folder=nfd)
+    write_stub_cmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", nfc])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == attach_line(clone) + "\n"
+    assert session_name(clone) in out
+    assert re.search(r"-[0-9a-f]{8} ", out)
+
+
+def test_attach_without_cmux_exits_with_one(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+    _attach_clone(env)
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "found no cmux command line tool" in captured.err
+
+
+def test_attach_with_a_broken_cmux_command_exits_with_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _attach_clone(env)
+    monkeypatch.setenv("DRAUPNIR_CMUX", '"broken')
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "could not read the cmux command" in captured.err
+
+
+def test_attach_to_a_foreign_session_exits_with_one(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    other = env.tmp / "elsewhere" / "feature-a"
+    calls = write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone, cwd=str(other))]})
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert str(other) in captured.err
+    assert _starts(calls) == []
+
+
+def test_attach_with_a_failed_start_exits_with_one(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _attach_clone(env)
+    write_stub_cmux(env.bin, fail=["local-tmux start"])
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "could not start the terminal session" in captured.err

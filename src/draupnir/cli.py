@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from draupnir import __version__
+from draupnir import __version__, cmux
 from draupnir.errors import OperationError, RebaseConflict
 from draupnir.github import SUCCESS, build_result_message
 from draupnir.ide import open_ide
@@ -108,6 +108,33 @@ def run_remove(args: argparse.Namespace) -> int:
         _log(f"Kept the clone {folder}. Nothing was deleted.")
         return 0
     remove_clone(ws, folder, args.force, _log)
+    return 0
+
+
+def _log_to_stderr(line: str) -> None:
+    print(line, file=sys.stderr)
+
+
+def run_attach(args: argparse.Namespace) -> int:
+    """Prints the line that attaches a terminal to the session of a clone (rule C1).
+
+    Every log line goes to standard error, so standard output holds only the line, and
+    `eval "$(draupnir attach)"` works. An OperationError reaches `main` before anything is
+    printed to standard output.
+    """
+    require_git()
+    ws = Workspace.find(Path.cwd())
+    given = ws.resolve_folder(args.folder, Path.cwd())
+    # The entry of project_paths is the folder from here on, because it has the spelling that the
+    # disk has. A name typed in NFC finds a folder that macOS stores in NFD.
+    folder = next((path for path in ws.project_paths() if cmux.same_folder(path, given)), None)
+    if folder is None:
+        raise OperationError(
+            f"{given} is not a clone of this workspace. "
+            "Give main/ or the folder of a clone next to it."
+        )
+    cmux.ensure_session(folder, _log_to_stderr)
+    print(cmux.attach_line(folder))
     return 0
 
 
@@ -392,6 +419,14 @@ def build_parser() -> argparse.ArgumentParser:
     open_parser = add_command("open", help="Start the IDE in a clone.")
     open_parser.add_argument("folder", nargs="?", help="clone to open")
     open_parser.set_defaults(func=run_open)
+
+    attach_parser = add_command(
+        "attach",
+        help="Print the line that attaches a terminal to the clone's session. "
+        "Starts the session when it has none.",
+    )
+    attach_parser.add_argument("folder", nargs="?", help="clone to attach to")
+    attach_parser.set_defaults(func=run_attach)
 
     return parser
 

@@ -47,7 +47,8 @@ require_tools() {
 # Builds the bare repository that stands in for GitHub, the stub commands, and an empty
 # workspace folder. It does not run draupnir init, so a test can run init itself.
 #
-# Sets TEST_DIR, REMOTE, SOURCE, ROOT, MAIN, STUB_BIN, BATS_IDEA_LOG and BATS_CMUX_LOG.
+# Sets TEST_DIR, REMOTE, SOURCE, ROOT, MAIN, STUB_BIN, BATS_IDEA_LOG, BATS_CMUX_LOG,
+# BATS_CMUX_SESSIONS, BATS_CMUX_FAIL and BATS_TMUX_LOG.
 setup_sandbox() {
     local name
     name="$(basename "$BATS_TEST_FILENAME" .bats)"
@@ -97,6 +98,10 @@ _isolate_environment() {
     # status into its sidebar. The stub cmux that _write_stubs puts first on the PATH is the
     # only one they can reach, because cmux puts the real one on the PATH as well.
     unset CMUX_WORKSPACE_ID CMUX_BUNDLED_CLI_PATH
+    # The tests may also run inside a terminal session of cmux local-tmux, or in a virtual
+    # environment, and must not see either. draupnir reads these to tell whether it runs inside
+    # a session, and to build the environment of a new one.
+    unset TMUX TMUX_PANE CMUX_SURFACE_ID CMUX_LOCAL_TMUX_BIN VIRTUAL_ENV
 
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
@@ -111,6 +116,9 @@ EOF
 
     export BATS_IDEA_LOG="$TEST_DIR/idea-calls.txt"
     export BATS_CMUX_LOG="$TEST_DIR/cmux-calls.txt"
+    export BATS_CMUX_SESSIONS="$TEST_DIR/cmux-sessions.json"
+    export BATS_TMUX_LOG="$TEST_DIR/tmux-calls.txt"
+    export BATS_CMUX_FAIL=
     export BATS_VENV_PYTHON="$VENV_PYTHON"
     export BATS_FAKE_GH="$FAKE_GH"
     export FAKE_GH_STATE="$TEST_DIR/fake-gh-state.json"
@@ -120,7 +128,7 @@ _write_stubs() {
     STUB_BIN="$TEST_DIR/bin"
     mkdir -p "$STUB_BIN"
     cp "$FIXTURES/stubs/mvn" "$FIXTURES/stubs/idea" "$FIXTURES/stubs/gh" \
-        "$FIXTURES/stubs/cmux" "$STUB_BIN/"
+        "$FIXTURES/stubs/cmux" "$FIXTURES/stubs/tmux" "$STUB_BIN/"
     chmod +x "$STUB_BIN"/*
     export PATH="$STUB_BIN:$PATH"
 }
@@ -161,6 +169,19 @@ draupnir_in() {
 # pending or none, and 'gh_state pull-requests'.
 gh_state() {
     PYTHONPATH="$PROJECT_ROOT/tests" "$VENV_PYTHON" "$GH_STATE_COMMAND" "$@"
+}
+
+# ----- The fake cmux sessions ----------------------------------------------------------------
+
+# Makes the stub cmux list one live terminal session. The entry holds every field that draupnir
+# needs of a running session, because it reads an entry with a missing field as unreadable.
+# Usage: cmux_session <name> <cwd> [clients]
+cmux_session() {
+    local name=$1 cwd=$2 clients=${3:-0}
+    printf '{"sessions": [{"session_name": "%s", "cwd": "%s", "live": true, ' "$name" "$cwd" \
+        > "$BATS_CMUX_SESSIONS"
+    printf '"socket_path": "%s/tmux-socket", "session_id": "$0", "clients": %s}]}\n' \
+        "$TEST_DIR" "$clients" >> "$BATS_CMUX_SESSIONS"
 }
 
 # ----- Changing the config ------------------------------------------------------------------

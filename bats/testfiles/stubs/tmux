@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stands in for tmux. It logs its arguments like the stub cmux does, and prints the name of a
+# shell, which is what draupnir reads as "nothing runs in the session".
+printf '%s\t' "$@" >> "$BATS_TMUX_LOG"
+echo >> "$BATS_TMUX_LOG"
+echo zsh

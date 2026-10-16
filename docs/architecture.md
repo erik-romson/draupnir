@@ -98,11 +98,12 @@ bats/
   pr.bats                  the pull request flow (R17)
   remove.bats              draupnir remove (R7)
   ide.bats                 starting the IDE (R13)
+  attach.bats              draupnir attach
 ```
 
 `setup_workspace` in the helper builds one sandbox per test under `tmp/batstest/`: the bare
-repository `project.git`, stubs for `mvn`, `idea`, `gh` and `cmux` on `PATH`, its own `HOME` and git
-config, and a workspace that `draupnir init` has set up. The sandbox stays behind after a
+repository `project.git`, stubs for `mvn`, `idea`, `gh`, `cmux` and `tmux` on `PATH`, its own `HOME`
+and git config, and a workspace that `draupnir init` has set up. The sandbox stays behind after a
 failure, so the workspace of a failed test can be looked at.
 
 The `gh` stub runs `tests/fake_gh.py`, so both suites use the same stand-in for GitHub. Because

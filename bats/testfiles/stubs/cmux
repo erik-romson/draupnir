@@ -1,11 +1,32 @@
 #!/bin/sh
 # Stands in for the cmux command line tool, so a test can never reach the cmux of the
 # user's own desktop. Each call appends its arguments to the log file, and the calls that
-# draupnir reads an answer from get one.
+# draupnir reads an answer from get one. A failed call is logged too.
+#
+# $BATS_CMUX_SESSIONS is the file that `local-tmux list` prints. $BATS_CMUX_FAIL is one prefix of
+# arguments, such as "local-tmux start". It holds a space, so a test can set only one prefix.
 printf '%s\t' "$@" >> "$BATS_CMUX_LOG"
 echo >> "$BATS_CMUX_LOG"
+if [ -n "$BATS_CMUX_FAIL" ]; then
+  case "$*" in
+    "$BATS_CMUX_FAIL"*)
+      echo "cmux: the stub was told to fail this call" >&2
+      exit 1
+      ;;
+  esac
+fi
 case "$1" in
   workspace-group) echo '{"groups": []}' ;;
   workspace) echo '{"workspace_id": "new-workspace", "surface_id": "new-terminal"}' ;;
   todo) echo '{"surface_id": "new-todo"}' ;;
+  tree) echo '{"windows": []}' ;;
+  local-tmux)
+    if [ "$2" = "list" ]; then
+      if [ -f "$BATS_CMUX_SESSIONS" ]; then
+        cat "$BATS_CMUX_SESSIONS"
+      else
+        echo '{"sessions": []}'
+      fi
+    fi
+    ;;
 esac
