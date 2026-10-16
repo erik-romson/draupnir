@@ -9,7 +9,7 @@ import shlex
 import signal
 import subprocess
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +37,9 @@ FETCH_TIMEOUT_SECONDS = 600.0
 PUSH_TIMEOUT_SECONDS = 600.0
 GH_TIMEOUT_SECONDS = 120.0
 CMUX_TIMEOUT_SECONDS = 30.0
+# The remove question reads the terminal sessions before it asks. A hung cmux must delay the
+# question by seconds and not by minutes, so these reads get a timeout of their own.
+LOCAL_TMUX_READ_TIMEOUT_SECONDS = 5.0
 CLONE_TIMEOUT_SECONDS = None
 MAVEN_TIMEOUT_SECONDS = None
 
@@ -164,8 +167,15 @@ def run(
     check: bool = True,
     log: LogFn | None = None,
     timeout: float | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> Result:
     """Runs a command. It never waits for input, and it can be stopped by a timeout.
+
+    Without env, the command gets the environment of draupnir plus the variables that keep
+    git and gh from asking questions. With env, the command gets exactly that environment,
+    and none of those variables. Use env only for a command that starts a program the user
+    works in and that never asks for input itself, such as a terminal session, because that
+    program should not inherit GIT_EDITOR=true or NO_COLOR=1.
 
     With log, the command line and every output line are passed to log, in order, as the
     command runs. stdout then holds both stdout and stderr, and stderr is empty. Without
@@ -183,7 +193,7 @@ def run(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if log is not None else subprocess.PIPE,
             text=True,
-            env=_env(),
+            env=dict(env) if env is not None else _env(),
             start_new_session=True,
         )
     except OSError as exc:

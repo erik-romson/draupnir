@@ -99,6 +99,18 @@ def test_run_sets_the_no_prompt_variables(tmp_path: Path) -> None:
     )
 
 
+def test_run_with_env_gives_the_command_exactly_that_environment(tmp_path: Path) -> None:
+    result = run(
+        ["/usr/bin/env"],
+        cwd=tmp_path,
+        env={"A": "1", "PATH": os.environ["PATH"]},
+    )
+
+    lines = result.stdout.splitlines()
+    assert "A=1" in lines
+    assert not any(line.startswith(("GIT_EDITOR=", "NO_COLOR=")) for line in lines)
+
+
 def test_run_starts_the_command_in_its_own_session(tmp_path: Path) -> None:
     result = run(
         [sys.executable, "-c", "import os; print(os.getsid(0) == os.getpid())"],

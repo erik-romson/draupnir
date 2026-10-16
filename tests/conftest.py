@@ -83,6 +83,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     # at a folder that does not exist.
     monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
     monkeypatch.delenv("CMUX_BUNDLED_CLI_PATH", raising=False)
+    # The tests may also run inside a terminal session of cmux local-tmux, or in a virtual
+    # environment, and must not see either. The session code reads these variables to tell
+    # whether draupnir runs inside a session, and to build the environment of a new one.
+    for name in ("TMUX", "TMUX_PANE", "CMUX_SURFACE_ID", "CMUX_LOCAL_TMUX_BIN", "VIRTUAL_ENV"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("draupnir.cmux._BUNDLED_COMMAND", tmp_path / "no-cmux-installed")
 
     monkeypatch.setenv("HOME", str(home))
