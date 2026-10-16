@@ -27,6 +27,7 @@ from draupnir.cmux import (
     close_session,
     cmux_command,
     ensure_session,
+    find_clone_workspace,
     read_session,
     runs_in_session,
     same_folder,
@@ -1007,3 +1008,227 @@ def test_session_programs_of_a_tmux_that_fails_is_unknown(env: Env) -> None:
     write_stub_tmux(env.bin, "vim\n", code=1)
 
     assert session_programs(_running(folder)) is None
+
+
+# ----- The workspace of a clone (W1) ------------------------------------------------------------
+
+
+def _surface(ref: str, kind: str = "terminal") -> dict[str, object]:
+    return {"id": f"id-{ref}", "ref": ref, "type": kind}
+
+
+def _workspace(ref: str, title: str, *panes: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "id": f"id-{ref}",
+        "ref": ref,
+        "title": title,
+        "panes": [{"surfaces": surfaces} for surfaces in panes],
+    }
+
+
+def _tree(*workspaces: dict[str, object]) -> dict[str, object]:
+    return {"windows": [{"workspaces": list(workspaces)}]}
+
+
+def _attach_binding(folder: Path, name: str | None = None) -> dict[str, object]:
+    arguments = ["cmux", "local-tmux", "attach", name or session_name(folder), "--headless"]
+    return {"resume_binding": {"launch_command": {"arguments": arguments}, "cwd": str(folder)}}
+
+
+def test_the_lookup_finds_the_workspace_by_title_and_attach_line(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    title = f"{env.root.name} feature-a"
+    tree = _tree(
+        _workspace("ws-a", title, [_surface("t-a")]),
+        _workspace("ws-b", title, [_surface("t-b"), _surface("todo-b", "workspaceTodo")]),
+    )
+    bindings = {"t-a": {"resume_binding": None}, "t-b": _attach_binding(folder)}
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, tree=tree, bindings=bindings)
+
+    found = find_clone_workspace(folder, logger()[1])
+
+    assert found.outcome == "found"
+    assert found.workspace_id == "id-ws-b"
+    assert found.surface_id == "id-t-b"
+    assert found.title == title
+    assert found.other_tabs == 0
+    assert cmux_calls(calls)[0] == ["tree", "--all", "--json", "--id-format", "both"]
+
+
+def test_the_lookup_reads_the_binding_without_an_id_format(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, tree=tree, bindings={"t-a": _attach_binding(folder)})
+
+    find_clone_workspace(folder, logger()[1])
+
+    assert cmux_calls(calls)[1] == [
+        "surface",
+        "resume",
+        "show",
+        "--workspace",
+        "id-ws-a",
+        "--surface",
+        "t-a",
+        "--json",
+    ]
+
+
+def test_the_lookup_does_not_take_the_workspace_of_another_folder(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    elsewhere = env.root.parent / "elsewhere" / "feature-a"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": _attach_binding(elsewhere)})
+
+    assert find_clone_workspace(folder, logger()[1]).outcome == "absent"
+
+    # The same folder with the attach line of another session is not the clone's either.
+    other_name = _attach_binding(folder, "shop-other")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": other_name})
+    assert find_clone_workspace(folder, logger()[1]).outcome == "absent"
+
+
+def test_the_lookup_without_a_title_match_reads_no_binding(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _tree(_workspace("ws-a", "another title", [_surface("t-a")]))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin, tree=tree)
+
+    assert find_clone_workspace(env.root / "feature-a", logger()[1]).outcome == "absent"
+
+    assert [call[:3] for call in cmux_calls(calls)] == [["tree", "--all", "--json"]]
+
+
+def test_the_lookup_of_a_terminal_without_a_binding_is_absent(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": {"resume_binding": None}})
+
+    assert find_clone_workspace(env.root / "feature-a", logger()[1]).outcome == "absent"
+
+
+def test_the_lookup_splits_a_binding_that_has_only_a_command(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    command = f"cmux local-tmux attach {session_name(folder)} --headless"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    binding = {"resume_binding": {"command": command, "cwd": str(folder)}}
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": binding})
+
+    assert find_clone_workspace(folder, logger()[1]).outcome == "found"
+
+
+def test_the_lookup_treats_a_command_with_an_open_quote_as_no_binding(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    binding = {"resume_binding": {"command": "cmux local-tmux attach 'x", "cwd": str(folder)}}
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": binding})
+    lines, log = logger()
+
+    assert find_clone_workspace(folder, log).outcome == "absent"
+    assert not [line for line in lines if not line.startswith("$ ")]
+
+
+def test_the_lookup_is_unreadable_when_a_binding_cannot_be_read(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, fail=["surface resume show"])
+    lines, log = logger()
+
+    result = find_clone_workspace(env.root / "feature-a", log)
+
+    assert result.outcome == "unreadable"
+    assert result.failure
+    assert [line for line in lines if not line.startswith("$ ")] == [result.failure]
+
+
+@pytest.mark.parametrize(
+    "tree",
+    ["not json", '{"windows": {}}', '{"windows": [{"workspaces": [{"title": "x"}]}]}'],
+)
+def test_the_lookup_is_unreadable_for_a_tree_it_cannot_use(
+    env: Env, monkeypatch: pytest.MonkeyPatch, tree: str
+) -> None:
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree)
+
+    assert find_clone_workspace(env.root / "feature-a", logger()[1]).outcome == "unreadable"
+
+
+def test_the_lookup_is_unreadable_when_the_tree_fails(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, fail=["tree"])
+
+    assert find_clone_workspace(env.root / "feature-a", logger()[1]).outcome == "unreadable"
+
+
+def test_the_lookup_stops_reading_at_the_first_match(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    title = f"{env.root.name} feature-a"
+    tree = _tree(
+        _workspace("ws-b", title, [_surface("t-b")]),
+        _workspace("ws-c", title, [_surface("t-c")]),
+    )
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(
+        env.bin,
+        tree=tree,
+        bindings={"t-b": _attach_binding(folder)},
+        fail=["surface resume show --workspace id-ws-c"],
+    )
+
+    result = find_clone_workspace(folder, logger()[1])
+
+    assert result.outcome == "found"
+    assert result.workspace_id == "id-ws-b"
+    assert len(cmux_calls(calls)) == 2
+
+
+@pytest.mark.parametrize(
+    ("extra", "others"),
+    [
+        (None, 0),
+        (_surface("todo", "workspaceTodo"), 0),
+        (_surface("second"), 1),
+        (_surface("web", "browser"), 1),
+        (_surface("notes", "markdown"), 1),
+        (_surface("odd", "somethingNew"), 1),
+    ],
+)
+def test_the_lookup_counts_the_other_tabs_of_the_workspace(
+    env: Env, monkeypatch: pytest.MonkeyPatch, extra: dict[str, object] | None, others: int
+) -> None:
+    folder = env.root / "feature-a"
+    # The bound terminal is in one pane, and the surface under test is in another.
+    panes = [[_surface("t-a")]] + ([[extra]] if extra else [])
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", *panes))
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings={"t-a": _attach_binding(folder)})
+
+    result = find_clone_workspace(folder, logger()[1])
+
+    assert result.outcome == "found"
+    assert result.other_tabs == others

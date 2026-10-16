@@ -12,7 +12,7 @@ from conftest import Env
 from helpers import cmux_calls, logger, sh, write_stub_cmux
 
 from draupnir.cli import main
-from draupnir.cmux import in_cmux, open_cmux_workspace
+from draupnir.cmux import CreatedWorkspace, in_cmux, open_cmux_workspace
 from draupnir.config import Config, IdeConfig
 from draupnir.errors import OperationError
 from draupnir.ide import (
@@ -295,3 +295,31 @@ def test_open_cmux_workspace_keeps_the_workspace_when_the_todo_list_fails(
     open_cmux_workspace(env.main, log)
 
     assert any("could not add the todo list" in line for line in lines)
+
+
+def test_open_cmux_workspace_runs_a_first_command_without_focus_and_returns_the_ids(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = write_stub_cmux(env.bin)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+
+    created = open_cmux_workspace(
+        env.main, logger()[1], command="cmux local-tmux attach shop-main --headless", focus=False
+    )
+
+    assert created == CreatedWorkspace(workspace_id="new-workspace", surface_id="new-terminal")
+    assert cmux_calls(calls)[1] == [
+        "workspace",
+        "create",
+        "--name",
+        f"{env.root.name} main",
+        "--cwd",
+        str(env.main),
+        "--focus",
+        "false",
+        "--command",
+        "cmux local-tmux attach shop-main --headless",
+        "--json",
+        "--id-format",
+        "both",
+    ]

@@ -292,18 +292,27 @@ def _add_todo_pane(workspace: str, terminal: str, folder: Path, log: LogFn) -> N
         run(_argv(command), folder, log=log, timeout=CMUX_TIMEOUT_SECONDS)
 
 
-def open_cmux_workspace(folder: Path, log: LogFn) -> None:
-    """Opens a new cmux workspace with a shell in folder and its todo list below, and switches
-    to it.
+@dataclass(frozen=True)
+class CreatedWorkspace:
+    """The ids that cmux gave to a workspace that draupnir has just created."""
+
+    workspace_id: str
+    surface_id: str
+
+
+def _create_cmux_workspace(
+    folder: Path, log: LogFn, *, command: str | None, focus: bool
+) -> CreatedWorkspace | None:
+    """Creates the cmux workspace of folder, and returns its ids.
 
     The workspace gets the name from project_name. When the workspace that draupnir runs in
     belongs to a sidebar group, the new workspace joins that group, right after it. Otherwise
-    cmux adds it to the window that draupnir runs in. When the todo list cannot be added, the
-    workspace stays open without it.
+    cmux adds it to the window that draupnir runs in. It returns None when cmux answers without
+    both ids.
 
     Raises OperationError when cmux is not found or refuses the workspace.
     """
-    command: list[str | Path] = [
+    arguments: list[str | Path] = [
         "workspace",
         "create",
         "--name",
@@ -311,12 +320,14 @@ def open_cmux_workspace(folder: Path, log: LogFn) -> None:
         "--cwd",
         folder,
         "--focus",
-        "true",
+        "true" if focus else "false",
     ]
+    if command is not None:
+        arguments += ["--command", command]
     caller = os.environ.get(_CMUX_VARIABLE)
     group = _cmux_group(caller, folder, log) if caller else None
     if caller and group:
-        command += [
+        arguments += [
             "--group",
             group,
             "--group-placement",
@@ -324,18 +335,216 @@ def open_cmux_workspace(folder: Path, log: LogFn) -> None:
             "--group-reference",
             caller,
         ]
-    created = _cmux_json(command, folder, log)
+    created = _cmux_json(arguments, folder, log)
     workspace = _text(created, "workspace_id")
     terminal = _text(created, "surface_id")
     if workspace is None or terminal is None:
-        return
+        return None
+    return CreatedWorkspace(workspace_id=workspace, surface_id=terminal)
+
+
+def _add_todo_pane_or_log(created: CreatedWorkspace, folder: Path, log: LogFn) -> None:
+    """Adds the todo list below the terminal of a new workspace, and logs when it cannot."""
     try:
-        _add_todo_pane(workspace, terminal, folder, log)
+        _add_todo_pane(created.workspace_id, created.surface_id, folder, log)
     except OperationError as exc:
         log(
             "The workspace is open, but draupnir could not add the todo list below the "
             f"terminal: {str(exc).splitlines()[0]}"
         )
+
+
+def open_cmux_workspace(
+    folder: Path, log: LogFn, *, command: str | None = None, focus: bool = True
+) -> CreatedWorkspace | None:
+    """Opens a new cmux workspace with a shell in folder and its todo list below.
+
+    The workspace gets the name from project_name and joins the sidebar group of the workspace
+    that draupnir runs in, if it has one. With focus the view switches to the new workspace. With
+    a command the terminal runs that line first. When the todo list cannot be added, the
+    workspace stays open without it. It returns the ids of the workspace, or None when cmux
+    answered without them.
+
+    Raises OperationError when cmux is not found or refuses the workspace.
+    """
+    created = _create_cmux_workspace(folder, log, command=command, focus=focus)
+    if created is None:
+        return None
+    # The clone's workspace runs `cmux surface resume set` at this place, between the create and
+    # the todo pane, so it needs the ids first. It calls _create_cmux_workspace and
+    # _add_todo_pane_or_log itself, with that call in between.
+    _add_todo_pane_or_log(created, folder, log)
+    return created
+
+
+# ----- The workspace of a clone -------------------------------------------------------------
+
+WorkspaceOutcome = Literal["found", "absent", "unreadable"]
+
+
+@dataclass(frozen=True)
+class CloneWorkspace:
+    """Whether the clone has a cmux workspace, as find_clone_workspace read it.
+
+    The outcome is found, absent or unreadable. Only absent allows draupnir to create a
+    workspace. A found workspace has its id, its title, the id of its bound terminal and the
+    number of other tabs in it. An unreadable lookup has the first line of the failure.
+    """
+
+    outcome: WorkspaceOutcome
+    workspace_id: str | None = None
+    title: str | None = None
+    surface_id: str | None = None
+    other_tabs: int = 0
+    failure: str | None = None
+
+
+# The surface of the todo list that draupnir adds to a workspace. It is not another tab.
+_TODO_SURFACE_TYPE = "workspaceTodo"
+
+
+def _objects(value: object) -> list[dict[str, object]] | None:
+    """The items of a JSON list when all are objects, and else None."""
+    if not isinstance(value, list):
+        return None
+    items = cast("list[object]", value)
+    if not all(isinstance(item, dict) for item in items):
+        return None
+    return cast("list[dict[str, object]]", items)
+
+
+def _tree_workspaces(tree: dict[str, object]) -> list[dict[str, object]] | None:
+    """The workspaces of windows[].workspaces[] of cmux tree, or None for another shape."""
+    windows = _objects(tree.get("windows"))
+    if windows is None:
+        return None
+    found: list[dict[str, object]] = []
+    for window in windows:
+        workspaces = _objects(window.get("workspaces"))
+        if workspaces is None:
+            return None
+        for workspace in workspaces:
+            if any(_text(workspace, key) is None for key in ("id", "ref", "title")):
+                return None
+            found.append(workspace)
+    return found
+
+
+def _workspace_surfaces(workspace: dict[str, object]) -> list[dict[str, object]] | None:
+    """The surfaces of panes[].surfaces[] of a workspace, or None for another shape."""
+    panes = _objects(workspace.get("panes"))
+    if panes is None:
+        return None
+    surfaces: list[dict[str, object]] = []
+    for pane in panes:
+        in_pane = _objects(pane.get("surfaces"))
+        if in_pane is None:
+            return None
+        for surface in in_pane:
+            if any(_text(surface, key) is None for key in ("id", "ref", "type")):
+                return None
+            surfaces.append(surface)
+    return surfaces
+
+
+def _binding(shown: dict[str, object]) -> tuple[list[str], str | None]:
+    """The command and the cwd of the resume binding of a terminal, read as bin/cmux-resume does.
+
+    A terminal without a binding gives an empty command. A command line that shlex cannot split
+    is not a binding of draupnir, because draupnir always writes the arguments.
+    """
+    raw = shown.get("resume_binding")
+    if not isinstance(raw, dict):
+        return [], None
+    binding = cast("dict[str, object]", raw)
+    cwd = _text(binding, "cwd")
+    launch = binding.get("launch_command")
+    if isinstance(launch, dict):
+        arguments = cast("dict[str, object]", launch).get("arguments")
+        if isinstance(arguments, list) and arguments:
+            items = cast("list[object]", arguments)
+            if all(isinstance(item, str) for item in items):
+                return cast("list[str]", items), cwd
+    command = _text(binding, "command")
+    if command:
+        try:
+            return shlex.split(command), cwd
+        except ValueError:
+            return [], cwd
+    return [], cwd
+
+
+def find_clone_workspace(folder: Path, log: LogFn) -> CloneWorkspace:
+    """Finds the cmux workspace of the clone in folder.
+
+    Titles are not unique, and the workspace id in a registry is only a hint. So the candidates
+    are the workspaces with the title of the clone, and the clone's own is the one with a
+    terminal whose resume binding is the attach line of the clone's session, in the clone's
+    folder. draupnir writes that binding when it creates the workspace.
+
+    Every read must succeed for absent, because a failed read may hide the clone's workspace, and
+    a second workspace would be a duplicate. So a read that fails gives unreadable, unless a
+    workspace was found before it. The first line of the failure goes to log. The caller must
+    have checked in_cmux.
+    """
+    try:
+        tree = _cmux_json(["tree", "--all"], folder.parent, log)
+        workspaces = _tree_workspaces(tree)
+        if workspaces is None:
+            return _unreadable_workspace(
+                "cmux tree --all --json did not print windows with workspaces.", log
+            )
+        title = project_name(folder)
+        wanted = ["local-tmux", "attach", session_name(folder), "--headless"]
+        for workspace in workspaces:
+            if workspace["title"] != title:
+                continue
+            surfaces = _workspace_surfaces(workspace)
+            if surfaces is None:
+                return _unreadable_workspace(
+                    "cmux tree --all --json did not print panes with surfaces.", log
+                )
+            for surface in surfaces:
+                if surface["type"] != "terminal":
+                    continue
+                shown = _cmux_json(
+                    [
+                        "surface",
+                        "resume",
+                        "show",
+                        "--workspace",
+                        str(workspace["id"]),
+                        "--surface",
+                        str(surface["ref"]),
+                    ],
+                    folder.parent,
+                    log,
+                    id_format=False,
+                )
+                arguments, cwd = _binding(shown)
+                if arguments[-4:] != wanted or cwd is None or not same_folder(cwd, folder):
+                    continue
+                bound = str(surface["id"])
+                others = sum(
+                    1
+                    for other in surfaces
+                    if other["id"] != bound and other["type"] != _TODO_SURFACE_TYPE
+                )
+                return CloneWorkspace(
+                    outcome="found",
+                    workspace_id=str(workspace["id"]),
+                    title=title,
+                    surface_id=bound,
+                    other_tabs=others,
+                )
+    except OperationError as exc:
+        return _unreadable_workspace(_first_line(str(exc)), log)
+    return CloneWorkspace(outcome="absent")
+
+
+def _unreadable_workspace(failure: str, log: LogFn) -> CloneWorkspace:
+    log(failure)
+    return CloneWorkspace(outcome="unreadable", failure=failure)
 
 
 # ----- The terminal session of a clone ------------------------------------------------------
