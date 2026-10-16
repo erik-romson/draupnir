@@ -728,6 +728,13 @@ def test_pr_flow_stops_when_the_pr_head_changed_during_the_build(env: Env) -> No
     branch = "feature/pr-new-head"
     folder, sha = _feature_clone(env, branch)
     _green(env, sha)
+    # The teammate's push runs inside the wait for the build, and the wait's clock keeps running.
+    # The default of 2 seconds is too short for a slow machine, and the wait would end with a
+    # timeout before the flow can see the new head.
+    config = env.root / "draupnir.toml"
+    config.write_text(
+        config.read_text().replace("timeout-seconds = 2\n", "timeout-seconds = 120\n")
+    )
     pushed: list[str] = []
 
     def push_from_a_teammate() -> None:

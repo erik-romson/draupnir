@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -18,8 +20,11 @@ from draupnir.cmux import (
     STATUS_KEY,
     YELLOW,
     SidebarStatus,
+    attach_line,
     clear_sidebar_status,
     cmux_command,
+    same_folder,
+    session_name,
     set_sidebar_status,
     sidebar_status,
 )
@@ -271,3 +276,156 @@ def test_cmux_command_skips_a_path_that_cannot_be_run(
 
     assert cmux_command() == [str(bundled)]
     assert not os.access(env.tmp / "gone", os.X_OK)
+
+
+# ----- The session name, the folder comparison and the attach line -----------------------
+
+_VALID_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$")
+_HASH = r"[0-9a-f]{8}"
+
+
+def _name(folder: Path | str) -> str:
+    name = session_name(Path(folder))
+    assert _VALID_NAME.match(name), name
+    assert len(name) <= 128
+    return name
+
+
+def test_session_name_of_a_plain_clone_is_the_readable_name() -> None:
+    assert _name("/w/shop/feature-login") == "shop-feature-login"
+    assert _name("/w/shop/main") == "shop-main"
+
+
+@pytest.mark.parametrize(
+    ("folder", "pattern"),
+    [
+        ("/w/shop/release-1.2.3", rf"shop-release-1_2_3-{_HASH}"),
+        ("/w/my shop/feat 1", rf"my-shop-feat-1-{_HASH}"),
+        ("/w/-x/feat", rf"x-feat-{_HASH}"),
+        ("/w/shop/fiks-båt", rf"shop-fiks-b-t-{_HASH}"),
+        ("/w/shop/語", rf"shop-{_HASH}"),
+        ("/w/日本/語", rf"clone-{_HASH}"),
+    ],
+)
+def test_session_name_of_a_changed_name_ends_with_a_hash(folder: str, pattern: str) -> None:
+    assert re.fullmatch(pattern, _name(folder))
+
+
+def test_session_name_hash_is_eight_hex_characters_of_the_path() -> None:
+    import hashlib
+
+    folder = Path("/w/shop/release-1.2.3")
+    digest = hashlib.sha256(b"/w/shop/release-1.2.3").hexdigest()[:8]
+
+    assert _name(folder) == f"shop-release-1_2_3-{digest}"
+
+
+def test_session_name_keeps_folders_with_the_same_readable_part_apart() -> None:
+    assert _name("/w/shop/fiks-båt") != _name("/w/shop/fiks-bøt")
+
+
+def test_session_name_of_very_long_folders_has_128_characters_and_differs() -> None:
+    first = _name("/w/shop/" + "a" * 200 + "b" * 100)
+    second = _name("/w/shop/" + "a" * 200 + "c" * 100)
+
+    assert len(first) == 128
+    assert len(second) == 128
+    assert first != second
+
+
+def test_session_name_is_exact_up_to_128_characters_and_suffixed_above() -> None:
+    exact = _name("/w/shop/" + "a" * 123)
+    suffixed = _name("/w/shop/" + "a" * 124)
+
+    assert exact == "shop-" + "a" * 123
+    assert len(exact) == 128
+    assert len(suffixed) == 128
+    assert re.fullmatch(rf"shop-a{{114}}-{_HASH}", suffixed)
+
+
+def test_session_name_tells_a_dot_from_an_underscore() -> None:
+    assert _name("/w/shop/release-1.2.3") != _name("/w/shop/release-1_2_3")
+
+
+def test_session_name_is_the_same_for_nfc_and_nfd() -> None:
+    nfc = unicodedata.normalize("NFC", "fiks-båt")
+    nfd = unicodedata.normalize("NFD", "fiks-båt")
+    assert nfc != nfd
+
+    assert _name(f"/w/shop/{nfc}") == _name(f"/w/shop/{nfd}")
+
+
+def test_session_name_of_a_folder_without_ascii_does_not_raise() -> None:
+    assert re.fullmatch(rf"clone-{_HASH}", _name("/w/日本/語"))
+
+
+def test_session_name_keeps_the_case() -> None:
+    assert _name("/w/Shop/main") != _name("/w/shop/main")
+    assert _name("/w/Shop/main") == "Shop-main"
+
+
+def test_session_name_of_a_symlinked_workspace_is_that_of_its_target(tmp_path: Path) -> None:
+    target = tmp_path / "real shop"
+    (target / "feat.1").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+
+    assert _name(link / "feat.1") == _name(target / "feat.1")
+
+
+def test_session_name_is_stable() -> None:
+    assert _name("/w/shop/release-1.2.3") == _name("/w/shop/release-1.2.3")
+
+
+def test_same_folder_sees_through_a_symlink(tmp_path: Path) -> None:
+    folder = tmp_path / "shop"
+    folder.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(folder)
+
+    assert same_folder(folder, link)
+    assert not same_folder(folder, tmp_path)
+
+
+def test_same_folder_compares_missing_paths_by_their_nfc_strings() -> None:
+    nfc = unicodedata.normalize("NFC", "fiks-båt")
+    nfd = unicodedata.normalize("NFD", "fiks-båt")
+
+    assert same_folder(f"/w/shop/{nfc}", Path(f"/w/shop/{nfd}"))
+    assert not same_folder("/w/shop/a", "/w/shop/b")
+
+
+def test_same_folder_falls_back_to_the_strings_when_samefile_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "shop"
+    folder.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(folder)
+
+    def fail(a: object, b: object) -> bool:
+        raise OSError("gone")
+
+    monkeypatch.setattr("os.path.samefile", fail)
+
+    assert same_folder(folder, link)
+    assert not same_folder(folder, tmp_path)
+
+
+def test_attach_line_attaches_headless_to_the_session_of_the_clone(env: Env) -> None:
+    write_stub_cmux(env.bin)
+
+    line = attach_line(env.root / "feature-login")
+
+    assert line == f"{env.bin}/cmux local-tmux attach shop-feature-login --headless"
+
+
+def test_attach_line_quotes_nothing_for_a_workspace_with_a_space(env: Env) -> None:
+    write_stub_cmux(env.bin)
+    folder = env.tmp / "my shop" / "feat"
+
+    line = attach_line(folder)
+
+    assert re.fullmatch(
+        rf"{re.escape(str(env.bin))}/cmux local-tmux attach my-shop-feat-{_HASH} --headless", line
+    )

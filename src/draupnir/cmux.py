@@ -1,11 +1,16 @@
-"""Talks to the cmux terminal: new workspaces, and the dashboard's status in its sidebar."""
+"""Talks to the cmux terminal: new workspaces, and the dashboard's status in its sidebar.
+
+It also names the terminal session of a clone, and builds the line that attaches to it.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
 import shutil
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +110,95 @@ def _argv(args: Sequence[str | Path]) -> list[str]:
             f"tool, or set {_COMMAND_VARIABLE} to the command that runs it."
         )
     return [*command, *(str(arg) for arg in args)]
+
+
+# cmux accepts a session name of 1 to 128 characters from A-Z, a-z, 0-9, _ and -.
+_SESSION_NAME_LIMIT = 128
+
+# The readable part is cut here when a suffix follows: 119 characters, "-" and 8 hex characters.
+_SESSION_SUFFIXED_LIMIT = _SESSION_NAME_LIMIT - 9
+
+_SESSION_CHARACTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+
+
+def _nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
+def _session_part(text: str) -> tuple[str, bool]:
+    """Maps the name of one folder to session characters, and says whether it changed any."""
+    mapped: list[str] = []
+    changed = False
+    for char in text:
+        if char in _SESSION_CHARACTERS:
+            mapped.append(char)
+        elif char in ".:":
+            # tmux turns these two into "_" as well.
+            mapped.append("_")
+            changed = True
+        else:
+            mapped.append("-")
+            changed = True
+    return "".join(mapped), changed
+
+
+def session_name(folder: Path) -> str:
+    """The name of the terminal session of a clone, such as "shop-feature-login".
+
+    The readable part is the project name of the IDE, mapped to the characters that cmux accepts.
+    A name that kept every character and fits is used as it is, so common names stay readable.
+    Every other name gets "-" and 8 hex characters of the hash of the clone's path. Without the
+    suffix, `fiks-båt` and `fiks-bøt` would both be `fiks-b-t`. The text is normalized to NFC
+    first, so a folder that macOS stores in NFD gets the same name as the spelling a user types.
+    """
+    resolved = folder.resolve()
+    # The two folders are mapped on their own, so the one space that project_name puts between
+    # them is a separator and not a replaced character.
+    parent, parent_changed = _session_part(_nfc(resolved.parent.name))
+    child, child_changed = _session_part(_nfc(resolved.name))
+    joined = f"{parent}-{child}"
+    readable = joined.lstrip("-")
+    # A dropped leading "-" counts as a change, because the name would read as an option.
+    exact = (
+        not parent_changed
+        and not child_changed
+        and len(readable) == len(joined)
+        and len(readable) <= _SESSION_NAME_LIMIT
+    )
+    if exact:
+        return readable
+    digest = hashlib.sha256(_nfc(str(resolved)).encode("utf-8")).hexdigest()[:8]
+    cut = readable[:_SESSION_SUFFIXED_LIMIT].rstrip("-")
+    return f"{cut}-{digest}" if cut else f"clone-{digest}"
+
+
+def same_folder(a: Path | str, b: Path | str) -> bool:
+    """True when two paths are the same folder.
+
+    It uses os.path.samefile when both paths exist, which also sees through symbolic links. In
+    every other case, and when samefile fails, it compares the NFC forms of the resolved paths.
+    """
+    first = Path(a).resolve()
+    second = Path(b).resolve()
+    if first.exists() and second.exists():
+        try:
+            return os.path.samefile(first, second)
+        except OSError:
+            pass
+    return _nfc(str(first)) == _nfc(str(second))
+
+
+def attach_argv(folder: Path) -> list[str]:
+    """The command that attaches a terminal to the session of a clone, without a cmux socket.
+
+    Raises OperationError when the cmux command line tool is not installed.
+    """
+    return _argv(["local-tmux", "attach", session_name(folder), "--headless"])
+
+
+def attach_line(folder: Path) -> str:
+    """attach_argv as one line that a shell can run."""
+    return shlex.join(attach_argv(folder))
 
 
 def in_cmux() -> bool:
