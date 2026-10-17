@@ -39,6 +39,8 @@ from draupnir.cmux import (
     set_sidebar_status,
     show_clone_workspace,
     sidebar_status,
+    terminal_attach_argv,
+    terminal_attach_line,
 )
 from draupnir.config import CmuxConfig
 from draupnir.errors import OperationError
@@ -747,6 +749,45 @@ def test_ensure_session_leaves_a_running_session_as_it_is(env: Env) -> None:
     assert cmux_calls(calls) == [_LIST]
 
 
+def test_ensure_session_gives_a_started_session_the_socket_of_the_server(env: Env) -> None:
+    folder = _clone(env)
+    write_stub_cmux(env.bin, sessions={"sessions": [], "socket_path": _SOCKET})
+    _lines, log = logger()
+
+    session = ensure_session(folder, log)
+
+    assert (session.state, session.socket_path, session.session_id) == ("running", _SOCKET, None)
+
+
+def test_terminal_attach_line_runs_the_tmux_that_cmux_names(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    monkeypatch.setenv("CMUX_LOCAL_TMUX_BIN", "/opt/tmux/bin/tmux")
+    session = TerminalSession(name="shop-feature-a", state="running", socket_path=_SOCKET)
+
+    line = terminal_attach_line(session, folder)
+
+    assert line == f"/opt/tmux/bin/tmux -S {_SOCKET} attach-session -t '=shop-feature-a'"
+
+
+def test_terminal_attach_line_without_tmux_is_the_cmux_line(env: Env) -> None:
+    folder = _clone(env)
+    write_stub_cmux(env.bin)
+    session = TerminalSession(name="shop-feature-a", state="running", socket_path=_SOCKET)
+
+    assert terminal_attach_line(session, folder) == attach_line(folder)
+
+
+def test_terminal_attach_line_without_a_socket_is_the_cmux_line(env: Env) -> None:
+    folder = _clone(env)
+    write_stub_cmux(env.bin)
+    write_stub_tmux(env.bin)
+    session = TerminalSession(name="shop-feature-a", state="running")
+
+    assert terminal_attach_line(session, folder) == attach_line(folder)
+
+
 def test_ensure_session_closes_a_stopped_session_before_it_starts_it_again(env: Env) -> None:
     """cmux 0.64.25 keeps the record of a dead session, and that record blocks the name."""
     folder = _clone(env)
@@ -1036,7 +1077,37 @@ def _tree(*workspaces: dict[str, object]) -> dict[str, object]:
 
 def _attach_binding(folder: Path, name: str | None = None) -> dict[str, object]:
     arguments = ["cmux", "local-tmux", "attach", name or session_name(folder), "--headless"]
+    return _binding_of(folder, arguments)
+
+
+def _binding_of(folder: Path, arguments: list[str]) -> dict[str, object]:
     return {"resume_binding": {"launch_command": {"arguments": arguments}, "cwd": str(folder)}}
+
+
+def test_the_lookup_finds_a_workspace_whose_binding_runs_tmux(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    arguments = ["/opt/tmux/bin/tmux", "-S", _SOCKET, "attach-session", "-t", "=shop-feature-a"]
+    bindings = {"t-a": _binding_of(folder, arguments)}
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings=bindings)
+
+    assert find_clone_workspace(folder, logger()[1]).outcome == "found"
+
+
+def test_the_lookup_skips_a_tmux_binding_of_a_session_with_a_longer_name(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = env.root / "feature-a"
+    tree = _tree(_workspace("ws-a", f"{env.root.name} feature-a", [_surface("t-a")]))
+    arguments = ["tmux", "-S", _SOCKET, "attach-session", "-t", "=shop-feature-a-2"]
+    bindings = {"t-a": _binding_of(folder, arguments)}
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    write_stub_cmux(env.bin, tree=tree, bindings=bindings)
+
+    assert find_clone_workspace(folder, logger()[1]).outcome == "absent"
 
 
 def test_the_lookup_finds_the_workspace_by_title_and_attach_line(
@@ -1279,7 +1350,7 @@ def test_show_clone_workspace_selects_the_workspace_that_the_clone_has(
     monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
     calls = write_stub_cmux(env.bin, tree=tree, bindings=bindings)
 
-    shown = show_clone_workspace(folder, True, logger()[1])
+    shown = show_clone_workspace(folder, _running(folder), True, logger()[1])
 
     assert shown == "found"
     assert _verbs(calls) == [["tree", "--all"], ["surface", "resume"], ["workspace", "select"]]
@@ -1295,7 +1366,7 @@ def test_show_clone_workspace_without_focus_only_says_that_the_clone_has_one(
     calls = write_stub_cmux(env.bin, tree=tree, bindings=bindings)
     lines, log = logger()
 
-    shown = show_clone_workspace(folder, False, log)
+    shown = show_clone_workspace(folder, _running(folder), False, log)
 
     assert shown == "found"
     assert _warnings(lines) == [
@@ -1314,7 +1385,7 @@ def test_show_clone_workspace_opens_nothing_when_the_workspaces_cannot_be_read(
     calls = write_stub_cmux(env.bin, fail=["tree"])
 
     with pytest.raises(OperationError) as raised:
-        show_clone_workspace(folder, True, logger()[1])
+        show_clone_workspace(folder, _running(folder), True, logger()[1])
 
     message = str(raised.value).splitlines()
     assert message[0] == _UNREADABLE_WORKSPACES
@@ -1330,7 +1401,7 @@ def test_show_clone_workspace_opens_a_workspace_that_attaches_to_the_session(
     monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
     calls = write_stub_cmux(env.bin)
 
-    shown = show_clone_workspace(folder, True, logger()[1])
+    shown = show_clone_workspace(folder, _running(folder), True, logger()[1])
 
     assert shown == "opened"
     assert cmux_calls(calls) == [
@@ -1370,6 +1441,25 @@ def test_show_clone_workspace_opens_a_workspace_that_attaches_to_the_session(
     ]
 
 
+def test_show_clone_workspace_with_tmux_saves_the_command_that_runs_tmux(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _clone(env)
+    session = _running(folder)
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "workspace-1")
+    calls = write_stub_cmux(env.bin)
+    write_stub_tmux(env.bin)
+
+    show_clone_workspace(folder, session, False, logger()[1])
+
+    tmux = [str(env.bin / "tmux"), "-S", _SOCKET, "attach-session", "-t", "=shop-feature-a"]
+    assert terminal_attach_argv(session, folder) == tmux
+    [create] = [call for call in cmux_calls(calls) if call[:2] == ["workspace", "create"]]
+    assert create[create.index("--command") + 1] == terminal_attach_line(session, folder)
+    [saved] = [call for call in cmux_calls(calls) if call[:3] == ["surface", "resume", "set"]]
+    assert saved[saved.index("--") + 1 :] == tmux
+
+
 def test_show_clone_workspace_keeps_the_workspace_when_cmux_cannot_save_the_command(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1378,7 +1468,7 @@ def test_show_clone_workspace_keeps_the_workspace_when_cmux_cannot_save_the_comm
     calls = write_stub_cmux(env.bin, fail=["surface resume set"])
     lines, log = logger()
 
-    shown = show_clone_workspace(folder, False, log)
+    shown = show_clone_workspace(folder, _running(folder), False, log)
 
     assert shown == "opened"
     warnings = _warnings(lines)

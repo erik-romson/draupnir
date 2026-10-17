@@ -173,10 +173,10 @@ def is_idle(terminal: Terminal) -> bool:
     environment, so a tty whose programs name only other terminals belongs to another terminal.
     When the owner is unclear, the check leans to busy, so a running program never gets input.
 
-    A terminal that runs a tmux client is never idle. The tab of a clone runs
-    `cmux local-tmux attach <name> --headless`. Typing the resume line into it would land in the
-    session, which is not a shell prompt of this tab. The check comes before the shell count, so a
-    live client is busy whatever the process tree looks like.
+    A terminal that runs a tmux client is never idle. The tab of a clone runs tmux attach-session,
+    or `cmux local-tmux attach <name> --headless` when it was saved before D58. Typing the resume
+    line into it would land in the session, which is not a shell prompt of this tab. The check
+    comes before the shell count, so a live client is busy whatever the process tree looks like.
 
     The shell is the process whose parent is not on the terminal, or whose parent is `login`.
     The terminal is idle when the shell is the only process in the foreground, which `ps` marks

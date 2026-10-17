@@ -154,17 +154,18 @@ setup() {
 
 @test "new inside cmux opens a workspace that shows the session" {
     export CMUX_WORKSPACE_ID=workspace-test
+    cmux_server
 
     run draupnir new feature-a
     assert_success
 
-    local attach="$STUB_BIN/cmux local-tmux attach shop-feature-a --headless"
+    local socket="$TEST_DIR/tmux-socket"
     run grep -F "workspace	create	" "$BATS_CMUX_LOG"
     assert_success
-    assert_output --partial "--command	$attach	"
+    assert_output --partial "--command	$STUB_BIN/tmux -S $socket attach-session -t '=shop-feature-a'	"
 
     run grep -F "surface	resume	set	" "$BATS_CMUX_LOG"
     assert_success
     assert_output --partial "--cwd	$ROOT/feature-a	"
-    assert_output --partial "	--	$STUB_BIN/cmux	local-tmux	attach	shop-feature-a	--headless	"
+    assert_output --partial "	--	$STUB_BIN/tmux	-S	$socket	attach-session	-t	=shop-feature-a	"
 }

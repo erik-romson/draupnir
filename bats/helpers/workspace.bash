@@ -184,6 +184,11 @@ cmux_session() {
         "$TEST_DIR" "$clients" >> "$BATS_CMUX_SESSIONS"
 }
 
+# Makes the stub cmux list no session, and name the socket of its tmux server, as cmux does.
+cmux_server() {
+    printf '{"sessions": [], "socket_path": "%s/tmux-socket"}\n' "$TEST_DIR" > "$BATS_CMUX_SESSIONS"
+}
+
 # ----- Changing the config ------------------------------------------------------------------
 
 # Adds one line to a section of draupnir.toml, and adds the section when it is not there yet.

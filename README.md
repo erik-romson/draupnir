@@ -68,13 +68,14 @@ To join the session from any other terminal, such as the console of an IDE, prin
 attaches to it:
 
 ```
-draupnir attach                  # prints: cmux local-tmux attach shop-feature-login --headless
+draupnir attach                  # prints: tmux -S <socket> attach-session -t '=shop-feature-login'
 eval "$(draupnir attach)"        # joins the session of the clone you are in
 ```
 
 You can also paste the printed line. `draupnir attach` starts the session when the clone has none,
-for example after a reboot. Two terminals in one session share one window size, so the smaller
-one decides it. After cmux relaunches, `bin/cmux-resume` types the line into the clone's tab and
+for example after a reboot. The line runs tmux itself, so the session follows when you resize the
+terminal. Two terminals in one session share one window size. By default, the terminal that you
+typed in last decides it. See [Two terminals show one session](docs/troubleshooting.md). After cmux relaunches, `bin/cmux-resume` types the line into the clone's tab and
 brings the tab back. See [Restart the dashboards after cmux relaunches](#restart-the-dashboards-after-cmux-relaunches).
 
 ### The status in the cmux sidebar

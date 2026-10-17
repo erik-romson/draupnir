@@ -29,13 +29,26 @@ start_count() {
 }
 
 @test "attach starts the session of the clone and prints its line" {
+    cmux_server
+
     # Standard error holds the log lines, so the output of the test is standard output only.
     run --separate-stderr draupnir_in "$ROOT/feature-a" attach
     assert_success
     # The line is the product of the command, so this test checks the output.
-    assert_output "$STUB_BIN/cmux local-tmux attach shop-feature-a --headless"
+    assert_output "$STUB_BIN/tmux -S $TEST_DIR/tmux-socket attach-session -t '=shop-feature-a'"
 
     run grep -Fx "local-tmux	start	shop-feature-a	--cwd	$CLONE	--detached	" "$BATS_CMUX_LOG"
+    assert_success
+}
+
+@test "the line that attach prints runs tmux on the session itself" {
+    cmux_session shop-feature-a "$CLONE"
+    local line
+    line="$(draupnir_in "$ROOT/feature-a" attach 2>/dev/null)" || fail "attach failed"
+
+    eval "$line"
+
+    run grep -Fx -- "-S	$TEST_DIR/tmux-socket	attach-session	-t	=shop-feature-a	" "$BATS_TMUX_LOG"
     assert_success
 }
 

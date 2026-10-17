@@ -212,6 +212,45 @@ def attach_line(folder: Path) -> str:
     return shlex.join(attach_argv(folder))
 
 
+def terminal_attach_argv(session: TerminalSession, folder: Path) -> list[str]:
+    """The command that attaches a terminal to session, the session of folder.
+
+    The command runs tmux itself on the socket of the session. `cmux local-tmux attach
+    --headless` keeps the terminal's foreground for itself, so its tmux client never hears that
+    the terminal changed size. Without tmux or a socket path, the command is attach_argv.
+
+    Raises OperationError when the cmux command line tool is not installed.
+    """
+    tmux = _tmux_command()
+    if session.socket_path is None or tmux is None:
+        return attach_argv(folder)
+    # tmux matches a bare session name by prefix, and = asks for exactly this session.
+    return [tmux, "-S", session.socket_path, "attach-session", "-t", f"={session.name}"]
+
+
+def terminal_attach_line(session: TerminalSession, folder: Path) -> str:
+    """terminal_attach_argv as one line that a shell can run, zsh included."""
+    # shlex leaves =name bare, and zsh reads a bare =name as the path of a command. A session
+    # name holds only letters, digits, - and _, so the quotes need no escaping.
+    return " ".join(
+        f"'{argument}'" if argument.startswith("=") else shlex.quote(argument)
+        for argument in terminal_attach_argv(session, folder)
+    )
+
+
+def _is_attach_command(arguments: list[str], folder: Path) -> bool:
+    """True when arguments attach to the session of folder, as draupnir saves it for a tab.
+
+    A tab saved before D58 holds the cmux line, and a newer tab holds the tmux line.
+    """
+    name = session_name(folder)
+    return arguments[-4:] == ["local-tmux", "attach", name, "--headless"] or arguments[-3:] == [
+        "attach-session",
+        "-t",
+        f"={name}",
+    ]
+
+
 def in_cmux() -> bool:
     """True when draupnir runs in a cmux terminal, so it can open cmux workspaces."""
     return bool(os.environ.get(_CMUX_VARIABLE))
@@ -480,8 +519,8 @@ def find_clone_workspace(folder: Path, log: LogFn) -> CloneWorkspace:
 
     Titles are not unique, and the workspace id in a registry is only a hint. So the candidates
     are the workspaces with the title of the clone, and the clone's own is the one with a
-    terminal whose resume binding is the attach line of the clone's session, in the clone's
-    folder. draupnir writes that binding when it creates the workspace.
+    terminal whose resume binding attaches to the clone's session, in the clone's folder.
+    draupnir writes that binding when it creates the workspace.
 
     Every read must succeed for absent, because a failed read may hide the clone's workspace, and
     a second workspace would be a duplicate. So a read that fails gives unreadable, unless a
@@ -496,7 +535,6 @@ def find_clone_workspace(folder: Path, log: LogFn) -> CloneWorkspace:
                 "cmux tree --all --json did not print windows with workspaces.", log
             )
         title = project_name(folder)
-        wanted = ["local-tmux", "attach", session_name(folder), "--headless"]
         for workspace in workspaces:
             if workspace["title"] != title:
                 continue
@@ -523,7 +561,11 @@ def find_clone_workspace(folder: Path, log: LogFn) -> CloneWorkspace:
                     id_format=False,
                 )
                 arguments, cwd = _binding(shown)
-                if arguments[-4:] != wanted or cwd is None or not same_folder(cwd, folder):
+                if (
+                    not _is_attach_command(arguments, folder)
+                    or cwd is None
+                    or not same_folder(cwd, folder)
+                ):
                     continue
                 bound = str(surface["id"])
                 others = sum(
@@ -552,13 +594,15 @@ def _unreadable_workspace(failure: str, log: LogFn) -> CloneWorkspace:
 ShownWorkspace = Literal["found", "opened"]
 
 
-def show_clone_workspace(folder: Path, focus: bool, log: LogFn) -> ShownWorkspace:
+def show_clone_workspace(
+    folder: Path, session: TerminalSession, focus: bool, log: LogFn
+) -> ShownWorkspace:
     """Goes to the cmux workspace of the clone, or opens it with the clone's terminal session.
 
-    The caller has made sure that the session runs, and that draupnir runs in cmux. When the
-    clone has its workspace, cmux selects it with focus, and without focus the log says that it
-    is there. Only when the lookup found no workspace does draupnir create one. Its terminal
-    runs the attach line, and cmux saves the same line as the command that brings the terminal
+    The caller has made sure that session runs, and that draupnir runs in cmux. When the clone
+    has its workspace, cmux selects it with focus, and without focus the log says that it is
+    there. Only when the lookup found no workspace does draupnir create one. Its terminal runs
+    terminal_attach_line, and cmux saves the same command as the one that brings the terminal
     back after a restart. The todo list goes below the terminal, as in every new workspace.
 
     Raises OperationError when the workspaces cannot be read, because a new workspace could be a
@@ -583,7 +627,10 @@ def show_clone_workspace(folder: Path, focus: bool, log: LogFn) -> ShownWorkspac
             lines.append(found.failure)
         raise OperationError("\n".join(lines))
 
-    created = _create_cmux_workspace(folder, log, command=attach_line(folder), focus=focus)
+    attach = terminal_attach_argv(session, folder)
+    created = _create_cmux_workspace(
+        folder, log, command=terminal_attach_line(session, folder), focus=focus
+    )
     title = project_name(folder)
     lost = (
         f"The cmux workspace {title} is open, but cmux will not bring its terminal back after "
@@ -610,7 +657,7 @@ def show_clone_workspace(folder: Path, focus: bool, log: LogFn) -> ShownWorkspac
                 "--name",
                 title,
                 "--",
-                *attach_argv(folder),
+                *attach,
             ],
             folder,
             log,
@@ -657,8 +704,10 @@ class TerminalSession:
     - foreign: a session with the name whose cwd is another folder;
     - unreadable: the list could not be read, or its entry for the name is not as expected.
 
-    A session that read_session found running always has socket_path and session_id. A session
-    that ensure_session has just started has neither, because it is not read again. clients is
+    A session that read_session found running always has socket_path and session_id. An absent
+    or stopped session has the socket path of the cmux tmux server when the list names it, and
+    so has a session that ensure_session has just started. Such a session has no session_id,
+    because it is not read again. clients is
     None when the list gives no count. failure holds the first line of what went wrong when the
     state is unreadable.
     """
@@ -712,6 +761,7 @@ def read_session(folder: Path, log: LogFn) -> TerminalSession:
         )
     except OperationError as exc:
         return _unreadable(name, _first_line(str(exc)))
+    server_socket = _text(listed, "socket_path")
     sessions = listed.get("sessions")
     if not isinstance(sessions, list):
         return _unreadable(name, f"{_LIST_COMMAND} printed no list of sessions.")
@@ -724,7 +774,7 @@ def read_session(folder: Path, log: LogFn) -> TerminalSession:
             if fields.get("session_name") == name:
                 matching.append(fields)
     if not matching:
-        return TerminalSession(name=name, state="absent")
+        return TerminalSession(name=name, state="absent", socket_path=server_socket)
     if len(matching) > 1:
         return _unreadable(name, f"{_LIST_COMMAND} lists the session {name} more than once.")
     entry = matching[0]
@@ -748,7 +798,7 @@ def read_session(folder: Path, log: LogFn) -> TerminalSession:
             name=name,
             state="stopped",
             cwd=cwd,
-            socket_path=socket_path,
+            socket_path=socket_path or server_socket,
             session_id=session_id,
             clients=count,
         )
@@ -847,7 +897,9 @@ def ensure_session(folder: Path, log: LogFn) -> TerminalSession:
             f"draupnir could not start the terminal session {session.name} for "
             f"{folder.name}.\n{exc}"
         ) from exc
-    return TerminalSession(name=session.name, state="running", cwd=str(resolved))
+    return TerminalSession(
+        name=session.name, state="running", cwd=str(resolved), socket_path=session.socket_path
+    )
 
 
 def open_clone_terminal(
@@ -868,9 +920,10 @@ def open_clone_terminal(
     try:
         if cmux_command() is None:
             return
+        session: TerminalSession | None = None
         if cmux_config.session:
             try:
-                ensure_session(folder, log)
+                session = ensure_session(folder, log)
             except OperationError as exc:
                 log(str(exc))
                 log(
@@ -878,9 +931,10 @@ def open_clone_terminal(
                     "set session = false under [cmux] in draupnir.toml."
                 )
                 return
-        shown = _open_new_clone_workspace(folder, cmux_config, workspace_flag, log)
-        if cmux_config.session and not shown:
-            log(f"Attach to the terminal session from any terminal with: {attach_line(folder)}")
+        shown = _open_new_clone_workspace(folder, session, cmux_config, workspace_flag, log)
+        if session is not None and not shown:
+            line = terminal_attach_line(session, folder)
+            log(f"Attach to the terminal session from any terminal with: {line}")
     # The catch is not wider on purpose. A TypeError or a KeyError here would be a bug in
     # draupnir, and the tests must see it. These three are what the outside world can cause: a
     # cmux that refuses, a folder that went away, or output that does not parse.
@@ -889,7 +943,11 @@ def open_clone_terminal(
 
 
 def _open_new_clone_workspace(
-    folder: Path, cmux_config: CmuxConfig, workspace_flag: bool | None, log: LogFn
+    folder: Path,
+    session: TerminalSession | None,
+    cmux_config: CmuxConfig,
+    workspace_flag: bool | None,
+    log: LogFn,
 ) -> bool:
     """Opens the cmux workspace of a new clone when the flag or the config asks for one (W3).
 
@@ -910,8 +968,8 @@ def _open_new_clone_workspace(
             )
         return False
     try:
-        if cmux_config.session:
-            show_clone_workspace(folder, False, log)
+        if session is not None:
+            show_clone_workspace(folder, session, False, log)
         else:
             # Without a session, the workspace is a plain shell in the clone, as w opens it.
             open_cmux_workspace(folder, log, focus=False)
@@ -936,8 +994,8 @@ def open_clone_workspace_for_user(folder: Path, cmux_config: CmuxConfig, log: Lo
     if not cmux_config.session:
         open_cmux_workspace(folder, log)
         return
-    ensure_session(folder, log)
-    show_clone_workspace(folder, True, log)
+    session = ensure_session(folder, log)
+    show_clone_workspace(folder, session, True, log)
 
 
 def runs_in_session(session: TerminalSession) -> bool:
@@ -1009,6 +1067,11 @@ def _close_session(folder: Path, session: TerminalSession, log: LogFn) -> None:
     log(failure)
 
 
+def _tmux_command() -> str | None:
+    """The tmux that cmux local-tmux runs, or None when there is none."""
+    return os.environ.get(_TMUX_COMMAND_VARIABLE) or shutil.which("tmux")
+
+
 def session_programs(session: TerminalSession) -> list[str] | None:
     """The programs that run in the panes of session, other than shells, or None when unknown.
 
@@ -1019,7 +1082,7 @@ def session_programs(session: TerminalSession) -> list[str] | None:
     """
     if session.socket_path is None or session.cwd is None:
         return None
-    tmux = os.environ.get(_TMUX_COMMAND_VARIABLE) or shutil.which("tmux")
+    tmux = _tmux_command()
     if not tmux:
         return None
     command = [

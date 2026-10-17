@@ -149,8 +149,8 @@ def run_attach(args: argparse.Namespace) -> int:
             f"{given} is not a clone of this workspace. "
             "Give main/ or the folder of a clone next to it."
         )
-    cmux.ensure_session(folder, _log_to_stderr)
-    print(cmux.attach_line(folder))
+    session = cmux.ensure_session(folder, _log_to_stderr)
+    print(cmux.terminal_attach_line(session, folder))
     return 0
 
 

@@ -255,12 +255,13 @@ session even with `session = false`, because the user asked for it. `new` and `r
 session without a word when no cmux tool is installed.
 
 **D54. One attach line, with `--headless`.** The line is `cmux local-tmux attach <name>
---headless`, built from the same tool that draupnir found (D51). It is what `draupnir attach`
-prints, the first command of the clone's cmux tab, and the command saved for the tab with
-`cmux surface resume set`. Without `--headless`, `attach` opens a tab through the cmux socket. A
-line that was typed into a restored shell then opened a second tab and left the first shell idle.
-With `--headless`, the same line works in any terminal. The saved command is stored as separate
-arguments, so no quoting can change it.
+--headless`, built from the same tool that draupnir found (D51). It is the first command of the
+clone's cmux tab, the command saved for the tab with `cmux surface resume set`, and what
+`draupnir attach` printed, until D58 replaced it with a line that runs tmux itself. Without
+`--headless`, `attach` opens a tab through the cmux socket. A line that was typed into a restored
+shell then opened a second tab and left the first shell idle. With `--headless`, the same line
+works in any terminal. The saved command is stored as separate arguments, so no quoting can change
+it.
 
 **D55. A cmux workspace per clone.** Inside cmux, `new` opens a workspace for the clone. It has the
 title of the IDE project (D41), it shows the clone's session, and it joins the sidebar group of the
@@ -299,6 +300,17 @@ process tree looks like. A tmux client, or a command line that contains `local-t
 a live terminal, and typing a command into it would reach the user's shell inside the session. A
 saved command whose folder no longer exists is reported as `gone`. Nothing is typed for it, and
 `--open-missing` opens nothing for it, because the folder belongs to a clone that was removed.
+
+**D58. Terminals attach with tmux itself.** `cmux local-tmux attach --headless` keeps the
+terminal's foreground for itself and runs its tmux client in a process group of its own. A terminal
+sends its size change only to the foreground, so that client never learns that the terminal was
+resized. The console of an IDE then gets a window drawn for an old size, and every line wraps. So
+`draupnir attach`, and the line that `new` prints, run `tmux -S <socket> attach-session -t
+'=<name>'`. The socket is the `socket_path` of `local-tmux list --json`, and tmux is the one that
+cmux uses (`CMUX_LOCAL_TMUX_BIN`, or the PATH). The quotes keep zsh from reading `=<name>` as a
+command path. Without tmux or a socket, the line stays the cmux line of D54. The clone's cmux tab
+runs the same command, and cmux saves it for the tab, so a tab that cmux restores follows resizes
+too. A tab that was saved before keeps the cmux line, and the workspace lookup accepts both.
 
 **D26. The dashboard refreshes on a timer.** Every `ui.refresh-seconds`. The timer never fetches,
 and skips a read while an action or another read runs.

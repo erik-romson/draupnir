@@ -41,6 +41,20 @@ give the clone another folder name with `--folder`.
 into it. Run `bin/cmux-resume` from the draupnir checkout. It types the line into every tab that
 holds a saved command and runs nothing.
 
+**Every line wraps in the console of an IDE.** The terminal was attached with
+`cmux local-tmux attach --headless`, which never tells tmux that the terminal changed size. Detach
+with `Ctrl-b d` and attach again with the line that `draupnir attach` prints. That line runs tmux
+itself, so tmux sees every resize.
+
+**Two terminals show one session.** A tmux window has one size, so a terminal of another size sees
+it cropped or with empty space. By default, the terminal that you typed in last decides the size.
+To keep the size of one terminal until you move, add this key to `~/.tmux.conf`, and press
+`Ctrl-b T` in the terminal that you work in:
+
+```
+bind T run-shell -C 'resize-window -x #{client_width} -y #{e|-:#{client_height},#{?status,1,0}}'
+```
+
 **The session is gone after a reboot.** A reboot stops tmux and every session with it. Run
 `draupnir attach` in the clone. It starts the session again and prints the line that joins it.
 

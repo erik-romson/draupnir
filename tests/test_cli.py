@@ -275,6 +275,39 @@ def test_attach_does_not_start_a_session_that_runs(
     assert _starts(calls) == []
 
 
+def test_attach_with_tmux_prints_a_line_that_runs_tmux_on_the_session_socket(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone = _attach_clone(env)
+    write_stub_cmux(env.bin, sessions={"sessions": [_running_entry(clone)]})
+    write_stub_tmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    assert code == 0
+    assert capsys.readouterr().out == (
+        f"{env.bin / 'tmux'} -S /tmp/tmux-test/default attach-session -t '=shop-feature-a'\n"
+    )
+
+
+def test_attach_that_starts_the_session_uses_the_socket_of_the_server(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _attach_clone(env)
+    calls = write_stub_cmux(
+        env.bin, sessions={"sessions": [], "socket_path": "/tmp/tmux-test/server"}
+    )
+    write_stub_tmux(env.bin)
+
+    code = main(["-C", str(env.root), "attach", "feature-a"])
+
+    assert code == 0
+    assert capsys.readouterr().out.endswith(
+        "-S /tmp/tmux-test/server attach-session -t '=shop-feature-a'\n"
+    )
+    assert len(_starts(calls)) == 1
+
+
 def test_attach_without_a_folder_uses_the_clone_that_holds_the_current_folder(
     env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -418,6 +451,22 @@ def test_new_starts_the_session_and_prints_the_attach_line(
     ]
     last = out.strip().splitlines()[-1]
     assert last == f"Attach to the terminal session from any terminal with: {attach_line(clone)}"
+
+
+def test_new_with_tmux_prints_the_line_that_runs_tmux_on_the_server_socket(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_stub_cmux(env.bin, sessions={"sessions": [], "socket_path": "/tmp/tmux-test/server"})
+    write_stub_tmux(env.bin)
+
+    code = main(["-C", str(env.root), "new", "feature-a"])
+
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert code == 0
+    assert last == (
+        "Attach to the terminal session from any terminal with: "
+        f"{env.bin / 'tmux'} -S /tmp/tmux-test/server attach-session -t '=shop-feature-a'"
+    )
 
 
 def test_new_without_cmux_says_nothing_about_sessions(
