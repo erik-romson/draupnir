@@ -204,7 +204,13 @@ def status_row(status: ProjectStatus, main_branch: str, build: BuildState | None
         parts.append(f"{status.untracked} untracked")
     changes = Text(", ".join(parts) or "clean", style="yellow" if parts else "green")
 
-    operation = Text(status.operation or "", style="bold red")
+    if status.operation:
+        operation = Text(status.operation, style="bold red")
+    elif status.finished:
+        # The column answers "what is this clone busy with", and done is the end of it (R29).
+        operation = Text("done", style="green")
+    else:
+        operation = Text("")
 
     build_cell = Text("")
     if build is not None:

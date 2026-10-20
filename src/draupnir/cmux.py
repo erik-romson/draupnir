@@ -1298,8 +1298,8 @@ def sidebar_status(
 
     Red covers what stops work: an operation in progress, a failed build of the current commit,
     and a clone that draupnir cannot read. Yellow covers unfinished work: local changes, commits
-    that are not on GitHub, and a branch that GitHub no longer has. Green means that every clone
-    is clean and in sync.
+    that are not on GitHub, and a branch that GitHub no longer has that the clone is not finished
+    with. Green means that every clone is clean and in sync.
     """
     if not statuses:
         return None
@@ -1337,7 +1337,8 @@ def sidebar_status(
         "{count} clones are not pushed",
     )
     yellow += _one_or_count(
-        [status.name for status in statuses if status.upstream_gone],
+        # A finished clone whose branch GitHub deleted is done, not unfinished work (R29).
+        [status.name for status in statuses if status.upstream_gone and not status.finished],
         "{name} is deleted on GitHub",
         "{count} branches are deleted on GitHub",
     )

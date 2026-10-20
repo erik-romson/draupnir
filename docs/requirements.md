@@ -125,6 +125,20 @@ in the [user guide](guide.md#concepts).
   workspace with the clone. A failure, or a session or workspace that draupnir runs in, never
   stops the removal.
 
+### When a clone is finished
+
+- **R29.** The list says `done` for a clone that has nothing left to do: the branch was pushed,
+  the default branch on GitHub has every change the branch has, the working tree is clean, there
+  is no stash, and no operation is in progress. The changes are compared by what they do and not
+  by the name of the commit, so a branch that GitHub merged with rebase still counts. A clone
+  that was never pushed is not finished, which is what tells a clone that is done from one that
+  was only just made. A finished clone is not unfinished work in the sidebar line of cmux.
+- **R30.** A clone can read clean and still hold files that git ignores, such as the notes and
+  the plan written for the change. The question before a removal names them, with their size and
+  where they are, so nothing is deleted unseen. `keep-on-remove` lists patterns whose files are
+  copied into `removed/<clone>-<date>/` in the workspace root before the clone is deleted. A copy
+  that fails stops the removal.
+
 ## Things outside this tool
 
 See [what draupnir does not manage](troubleshooting.md#what-draupnir-does-not-manage).

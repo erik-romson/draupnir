@@ -78,6 +78,41 @@ terminal. Two terminals in one session share one window size. By default, the te
 typed in last decides it. See [Two terminals show one session](docs/troubleshooting.md). After cmux relaunches, `bin/cmux-resume` types the line into the clone's tab and
 brings the tab back. See [Restart the dashboards after cmux relaunches](#restart-the-dashboards-after-cmux-relaunches).
 
+### When a clone is finished
+
+The `In progress` column says `done` when a clone has nothing left to do: the branch was pushed,
+the default branch on GitHub has every change it has, the working tree is clean, and no rebase or
+merge is in progress. draupnir works this out from git, so there is nothing to set and nothing to
+keep up to date.
+
+A clone that was only just made is ahead of the default branch by nothing either, so the push is
+what tells the two apart:
+
+| vs origin/main | vs upstream | Local changes | In progress |
+|---|---|---|---|
+| `↑0 ↓0` | `not pushed` | `clean` | empty. Nothing has been done in it yet |
+| `↑0 ↓0` | `↑0 ↓0` | `clean` | `done` |
+| `↑3 ↓0` | `deleted on GitHub` | `clean` | `done`, after a rebase and merge on GitHub |
+
+The changes are compared by what they do, not by the name of the commit, so a branch that GitHub
+merged with "rebase and merge" still counts as done. A squash merge does not: it turns the whole
+branch into one commit that matches nothing.
+
+A finished clone is usually one to remove, and that is where the notes and the plan written for
+the change are at risk. They live in a folder that `.gitignore` covers, so no check before a
+removal sees them. The question names them before anything is deleted:
+
+```
+Delete /work/shop/feature-login with its .m2repo and local files?
+  It holds 408 KB in 11 files that git ignores: notes/.
+  They are deleted with the clone. Set keep-on-remove in draupnir.toml to copy the ones you
+  want to keep out of it first.
+```
+
+`keep-on-remove` under `[workspace]` in `draupnir.toml` copies them out of the clone before it
+is deleted, into `removed/` next to `main/`. See
+[Removing a clone](docs/configuration.md#removing-a-clone).
+
 ### The status in the cmux sidebar
 
 A dashboard that runs in cmux writes one line about its clones into the sidebar row of its own
@@ -93,8 +128,9 @@ The line carries an icon of its own, so you can tell it from the lines cmux writ
 
 Red covers an operation in progress, a failed build of the current commit, and a clone draupnir
 cannot read. Yellow covers local changes, commits that are not on GitHub, and a branch GitHub no
-longer has. The line holds the three most important parts, worst first. draupnir writes it again
-only when it changes, and takes it away when the dashboard quits.
+longer has that the clone is not finished with. The line holds the three most important parts,
+worst first. draupnir writes it again only when it changes, and takes it away when the dashboard
+quits.
 
 Set `cmux-status = false` under `[ui]` in `draupnir.toml` to turn it off.
 

@@ -24,6 +24,7 @@ from draupnir.errors import OperationError
 from draupnir.runner import NETWORK_HINT
 from draupnir.setup import (
     folder_for_branch,
+    ignored_files_note,
     init,
     new_clone,
     prepare,
@@ -33,8 +34,16 @@ from draupnir.setup import (
 
 
 def _configure_local_files(root: Path, paths: list[str]) -> None:
+    _configure_workspace(root, "local-files", paths)
+
+
+def _configure_keep_on_remove(root: Path, paths: list[str]) -> None:
+    _configure_workspace(root, "keep-on-remove", paths)
+
+
+def _configure_workspace(root: Path, key: str, paths: list[str]) -> None:
     quoted = ", ".join(f'"{path}"' for path in paths)
-    line = f"local-files = [{quoted}]"
+    line = f"{key} = [{quoted}]"
     path = root / "draupnir.toml"
     lines = path.read_text().splitlines()
     for i, existing_line in enumerate(lines):
@@ -982,3 +991,124 @@ def test_remove_command_asks_before_deleting(
     assert code == 0
     assert f"Deleted {folder}." in capsys.readouterr().out
     assert not folder.exists()
+
+
+# ----- The files git ignores, before a removal (R30) -------------------------------------
+
+
+def _ignore_in_clone(folder: Path, line: str) -> None:
+    """Adds an ignore line to the clone's own exclude file, as a project's .gitignore would."""
+    exclude = folder / ".git" / "info" / "exclude"
+    exclude.write_text(exclude.read_text() + f"{line}\n")
+
+
+def _with_notes(env: Env, branch: str) -> Path:
+    """A clone that holds two files of notes that git ignores, 1 KB each."""
+    _, log = logger()
+    folder = new_clone(env.ws(), branch, None, log)
+    _ignore_in_clone(folder, "/notes/")
+    (folder / "notes").mkdir()
+    (folder / "notes" / "plan.md").write_text("x" * 1024)
+    (folder / "notes" / "questions.md").write_text("y" * 1024)
+    return folder
+
+
+def test_the_remove_question_names_the_files_that_git_ignores(env: Env) -> None:
+    folder = _with_notes(env, "feature/with-notes")
+
+    assert ignored_files_note(env.ws(), folder) == [
+        "It holds 2.0 KB in 2 files that git ignores: notes/.",
+        "They are deleted with the clone. Set keep-on-remove in draupnir.toml to copy the "
+        "ones you want to keep out of it first.",
+    ]
+
+
+def test_the_remove_question_leaves_out_what_draupnir_put_in_the_clone(env: Env) -> None:
+    """The .m2repo and the local files are not the user's work, and main/ keeps its copy."""
+    _configure_local_files(env.root, ["local.properties"])
+    (env.main / "local.properties").write_text("port=8080\n")
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/nothing-of-its-own", None, log)
+
+    assert (folder / ".m2repo").is_dir()
+    assert (folder / "local.properties").is_file()
+    assert ignored_files_note(env.ws(), folder) == []
+
+
+def test_the_remove_question_says_what_keep_on_remove_will_keep(env: Env) -> None:
+    folder = _with_notes(env, "feature/notes-that-are-kept")
+    _configure_keep_on_remove(env.root, ["notes/**"])
+
+    assert ignored_files_note(env.ws(), folder) == [
+        "It holds 2.0 KB in 2 files that git ignores: notes/.",
+        "draupnir copies the 2 files that keep-on-remove matches into removed/ first, and "
+        "deletes the rest.",
+    ]
+
+
+def test_remove_copies_what_keep_on_remove_matches_out_of_the_clone(env: Env) -> None:
+    folder = _with_notes(env, "feature/keep-the-notes")
+    (folder / "scratch.log").write_text("not worth keeping\n")
+    _ignore_in_clone(folder, "/scratch.log")
+    _configure_keep_on_remove(env.root, ["notes/**"])
+    lines, log = logger()
+
+    remove_clone(env.ws(), folder, False, log)
+
+    assert not folder.exists()
+    kept = sorted((env.root / "removed").rglob("*.md"))
+    assert [path.name for path in kept] == ["plan.md", "questions.md"]
+    # The copy keeps the path the file has in the clone, under a folder named after it.
+    assert kept[0].parent.name == "notes"
+    assert kept[0].parent.parent.name.startswith("feature-keep-the-notes-")
+    assert kept[0].read_text() == "x" * 1024
+    # What the patterns do not match goes with the clone.
+    assert not list((env.root / "removed").rglob("scratch.log"))
+    assert any("Copied 2 files into" in line for line in lines)
+
+
+def test_remove_with_force_still_keeps_the_files(env: Env) -> None:
+    """Force skips the check for work GitHub does not have, not the files asked for."""
+    folder = _with_notes(env, "feature/forced-but-kept")
+    _configure_keep_on_remove(env.root, ["notes/**"])
+    commit(folder, "work.txt", "work\n", "work that is on no branch GitHub has")
+    _, log = logger()
+
+    remove_clone(env.ws(), folder, True, log)
+
+    assert not folder.exists()
+    assert len(list((env.root / "removed").rglob("*.md"))) == 2
+
+
+def test_remove_keeps_the_clone_when_the_files_cannot_be_copied(env: Env) -> None:
+    folder = _with_notes(env, "feature/copy-fails")
+    _configure_keep_on_remove(env.root, ["notes/**"])
+    # A file where the folder has to go, so the copy cannot start.
+    (env.root / "removed").write_text("not a folder\n")
+    _, log = logger()
+
+    with pytest.raises(OperationError) as error:
+        remove_clone(env.ws(), folder, False, log)
+
+    assert "keep-on-remove" in str(error.value)
+    assert folder.is_dir()
+
+
+def test_the_remove_question_of_the_command_names_the_files_that_git_ignores(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _with_notes(env, "feature/asks-about-notes")
+    monkeypatch.chdir(env.root)
+    monkeypatch.setattr(sys, "stdin", FakeStdin(is_a_tty=True))
+    questions: list[str] = []
+
+    def answer_no(prompt: str = "") -> str:
+        questions.append(prompt)
+        return "n"
+
+    monkeypatch.setattr("builtins.input", answer_no)
+
+    assert main(["remove", folder.name]) == 0
+
+    assert "  It holds 2.0 KB in 2 files that git ignores: notes/." in questions[0]
+    assert folder.is_dir()

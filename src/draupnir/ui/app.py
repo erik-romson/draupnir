@@ -42,7 +42,7 @@ from draupnir.operations import (
     rebase_on_main,
 )
 from draupnir.runner import LogFn
-from draupnir.setup import folder_for_branch, new_clone, remove_clone
+from draupnir.setup import folder_for_branch, ignored_files_note, new_clone, remove_clone
 from draupnir.status import ProjectStatus, read_status
 from draupnir.ui.branchpicker import BranchChoice, BranchPickerScreen
 from draupnir.ui.confirm import ConfirmScreen
@@ -833,12 +833,14 @@ class DraupnirApp(App[None]):
 
     @work(thread=True, group="remove-question", exit_on_error=False)
     def _ask_about_removal(self, question: str, folder: Path, answered: AnswerCallback) -> None:
-        """Asks question about the removal of folder, with the lines about its terminal session.
+        """Asks question about the removal of folder, with the lines about what goes with it.
 
-        The lines come from cmux, which can be slow, so they are read in this worker thread. The
-        dialog opens when they are read. session_note never raises, so the dialog always opens.
+        The lines name the files git ignores, which no other check sees (R30), and then the
+        clone's terminal session. Both read the disk, and cmux can be slow, so they are read in
+        this worker thread. The dialog opens when they are read. Neither call raises, so the
+        dialog always opens.
         """
-        lines = session_note(folder)
+        lines = [*ignored_files_note(self.ws, folder), *session_note(folder)]
         self._call_ui(self._show_removal_question, question, lines, answered)
 
     def _show_removal_question(

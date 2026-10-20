@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from draupnir import maven
@@ -58,8 +59,8 @@ class _LocalFile:
     exists_in_folder: bool
 
 
-def _matching_files(main: Path, patterns: list[str]) -> list[str]:
-    """The files in main/ that patterns match, the way git reads the lines of a .gitignore.
+def _matching_files(folder: Path, patterns: list[str]) -> list[str]:
+    """The files in folder that patterns match, the way git reads the lines of a .gitignore.
 
     git itself does the matching, so every rule works, including '**' and a '!' line that
     takes a file back. The patterns are read in the order the config lists them. A file that
@@ -68,7 +69,7 @@ def _matching_files(main: Path, patterns: list[str]) -> list[str]:
     if not patterns:
         return []
     options = [f"--exclude={pattern}" for pattern in patterns]
-    found = git(main, "ls-files", "-z", "--others", "--ignored", *options)
+    found = git(folder, "ls-files", "-z", "--others", "--ignored", *options)
     return [path for path in found.stdout.split("\0") if path]
 
 
@@ -276,6 +277,13 @@ def _toml_template(url: str | None) -> str:
 #   ".claude/settings.local.json",
 #   ".idea/runConfigurations",
 #   ".git/hooks/commit-msg",
+# ]
+
+# Files that git ignores and that remove copies out of the clone before it deletes it, into
+# removed/ next to main/. Patterns are written the way a line in .gitignore is written. Use
+# it for notes and plans that live in the clone and nowhere else.
+# keep-on-remove = [
+#   "notes/**",
 # ]
 
 [maven]
@@ -810,6 +818,217 @@ def check_removable(ws: Workspace, folder: Path) -> Path:
     return folder
 
 
+# The folder where remove keeps what workspace.keep-on-remove matches, next to main/ and the
+# clones. The workspace root is no git clone, so nothing in it is committed by accident.
+REMOVED_FOLDER_NAME = "removed"
+
+# What draupnir itself puts into a clone, and git ignores. It is not the user's work, so the
+# question about the files git ignores leaves it out.
+_DRAUPNIR_OWN = (".m2repo", ".mvn/maven.config")
+
+_SIZE_UNITS: tuple[tuple[str, int], ...] = (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024))
+
+# How many folders the question names before it counts the rest.
+_TOPS_NAMED = 3
+
+
+@dataclass(frozen=True)
+class _IgnoredFiles:
+    """What a clone holds that git ignores, for the question before a removal (R30)."""
+
+    count: int
+    size: int
+    # The top of each path, a folder with its slash or a file, the largest first.
+    tops: tuple[str, ...]
+
+
+def _size_text(size: int) -> str:
+    """A size a person can read, such as "408 KB" or "1.4 MB"."""
+    for name, step in _SIZE_UNITS:
+        if size >= step:
+            scaled = size / step
+            return f"{scaled:.0f} {name}" if scaled >= 10 else f"{scaled:.1f} {name}"
+    return _plural(size, "byte", "bytes")
+
+
+def _tops_text(tops: Sequence[str]) -> str:
+    """The folders the files are in, largest first, as a sentence part.
+
+    A clone with a build tree in it has more folders than fit in a question, so a long list
+    ends in "and 6 more". The names alone cannot say which of them hold work, which is why the
+    line that follows names keep-on-remove.
+    """
+    if len(tops) == 1:
+        return tops[0]
+    if len(tops) <= _TOPS_NAMED + 1:
+        return ", ".join(tops[:-1]) + f" and {tops[-1]}"
+    return ", ".join(tops[:_TOPS_NAMED]) + f" and {len(tops) - _TOPS_NAMED} more"
+
+
+def _ignored_entries(folder: Path) -> list[str]:
+    """The paths in folder that git ignores. A folder that is ignored whole is one entry."""
+    found = git(
+        folder,
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        check=False,
+    )
+    if found.code != 0:
+        return []
+    return [path for path in found.stdout.split("\0") if path]
+
+
+def _files_under(folder: Path, entry: str) -> Iterator[tuple[str, int]]:
+    """Every file of one ignored entry, as its path inside folder and its size in bytes.
+
+    A symbolic link is left out, because its target is counted where the target lives, and
+    following one could leave the clone.
+    """
+    path = folder / entry
+    if path.is_symlink():
+        return
+    if path.is_dir():
+        children = (child for child in path.rglob("*") if not child.is_symlink())
+        for child in children:
+            if child.is_file():
+                yield child.relative_to(folder).as_posix(), child.stat().st_size
+    elif path.is_file():
+        yield entry.rstrip("/"), path.stat().st_size
+
+
+def _belongs_to_the_user(path: str, local_files: Collection[str]) -> bool:
+    """False for a file draupnir put there itself, and for a file of workspace.local-files."""
+    if path in local_files:
+        return False
+    return not any(path == own or path.startswith(f"{own}/") for own in _DRAUPNIR_OWN)
+
+
+def _local_file_patterns(ws: Workspace) -> list[str]:
+    """The workspace.local-files patterns that can match a file this count would include.
+
+    A pattern inside the git folder is left out, because git never lists those files. So is a
+    pattern inside what draupnir puts in the clone, which is skipped as a whole entry already:
+    one of them is the clone's Maven repository, and matching it means listing a hundred
+    thousand files to throw them all away again.
+    """
+    patterns: list[str] = []
+    for pattern in ws.config.workspace.local_files:
+        bare = pattern.removeprefix("!").removeprefix("/").rstrip("/")
+        if bare.startswith(".git/"):
+            continue
+        if any(bare == own or bare.startswith(f"{own}/") for own in _DRAUPNIR_OWN):
+            continue
+        patterns.append(pattern)
+    return patterns
+
+
+def _ignored_files(ws: Workspace, folder: Path) -> _IgnoredFiles:
+    """Counts and measures what folder holds that git ignores, and where it is.
+
+    The files draupnir put there, and the files of workspace.local-files, are left out: the
+    first are draupnir's own, and main/ keeps its copy of the second.
+    """
+    local_files = set(_matching_files(folder, _local_file_patterns(ws)))
+    sizes: dict[str, int] = {}
+    count = 0
+    total = 0
+    for entry in _ignored_entries(folder):
+        # A folder of draupnir's own is skipped whole, so a large .m2repo is never walked.
+        if not _belongs_to_the_user(entry.rstrip("/"), local_files):
+            continue
+        for path, size in _files_under(folder, entry):
+            if not _belongs_to_the_user(path, local_files):
+                continue
+            head, slash, _ = path.partition("/")
+            top = head + slash
+            sizes[top] = sizes.get(top, 0) + size
+            count += 1
+            total += size
+    tops = sorted(sizes, key=lambda top: sizes[top], reverse=True)
+    return _IgnoredFiles(count=count, size=total, tops=tuple(tops))
+
+
+def ignored_files_note(ws: Workspace, folder: Path) -> list[str]:
+    """The lines about the files git ignores that go under the remove question (R30).
+
+    A clone can read clean in every column and still hold the notes and the plan that were
+    written for the change, because git ignores them and the checks before a removal never see
+    them. The question names them, so the user decides what happens to them before the clone
+    goes.
+
+    It returns no lines when there is nothing to say. It never raises: the question has to be
+    asked even when the files cannot be read.
+    """
+    try:
+        found = _ignored_files(ws, folder)
+        if not found.count:
+            return []
+        kept = len(_matching_files(folder, list(ws.config.workspace.keep_on_remove)))
+    except (CommandError, OperationError, OSError):
+        return []
+
+    lines = [
+        f"It holds {_size_text(found.size)} in {_plural(found.count, 'file', 'files')} that "
+        f"git ignores: {_tops_text(found.tops)}."
+    ]
+    if kept:
+        lines.append(
+            f"draupnir copies the {_plural(kept, 'file', 'files')} that keep-on-remove matches "
+            f"into {REMOVED_FOLDER_NAME}/ first, and deletes the rest."
+        )
+    else:
+        lines.append(
+            "They are deleted with the clone. Set keep-on-remove in "
+            f"{CONFIG_FILE_NAME} to copy the ones you want to keep out of it first."
+        )
+    return lines
+
+
+def _keep_destination(ws: Workspace, folder: Path) -> Path:
+    """A folder of its own under <workspace root>/removed/ for the files kept from folder."""
+    base = ws.root / REMOVED_FOLDER_NAME / f"{folder.name}-{date.today().isoformat()}"
+    candidate = base
+    number = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}-{number}")
+        number += 1
+    return candidate
+
+
+def _keep_files_of(ws: Workspace, folder: Path, log: LogFn) -> None:
+    """Copies what workspace.keep-on-remove matches out of folder, before it is deleted (R30).
+
+    The copy keeps the paths the files have in the clone. A copy that fails raises, and the
+    clone is then not deleted, because the point of the key is that these files survive.
+    """
+    patterns = list(ws.config.workspace.keep_on_remove)
+    if not patterns:
+        return
+    paths = _matching_files(folder, patterns)
+    if not paths:
+        log(f"Nothing in {folder} matches workspace.keep-on-remove.")
+        return
+
+    destination = _keep_destination(ws, folder)
+    try:
+        for path in paths:
+            target = destination / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(folder / path, target)
+    except OSError as exc:
+        raise OperationError(
+            f"draupnir could not copy the files that workspace.keep-on-remove matches out of "
+            f"{folder}, so it did not delete the clone. Copy them yourself, or take the "
+            f"pattern out of {CONFIG_FILE_NAME}, and remove the clone again. The error was: "
+            f"{exc}"
+        ) from exc
+    log(f"Copied {_plural(len(paths), 'file', 'files')} into {destination}.")
+
+
 def remove_clone(
     ws: Workspace,
     folder: Path,
@@ -822,6 +1041,10 @@ def remove_clone(
     Without force, it fetches first and refuses when unsaved_work finds anything. The message
     lists every reason. With force, it skips the fetch and the checks, but it still refuses
     main/, the workspace root, and folders that are not clones of the project.
+
+    What workspace.keep-on-remove matches is copied out of the clone first (R30), with force
+    as well: force skips the check for work that GitHub does not have, not the files the user
+    asked to keep.
 
     before_delete, when given, is called after the checks passed and before the delete. The
     callers close the clone's terminal there, so a program in it cannot write into the folder
@@ -854,6 +1077,7 @@ def remove_clone(
             raise OperationError("\n".join(lines))
         log(f"Nothing in {folder} is missing on GitHub.")
 
+    _keep_files_of(ws, folder, log)
     if before_delete is not None:
         before_delete()
     log(f"Deleting {folder}. A large .m2repo can take a while.")

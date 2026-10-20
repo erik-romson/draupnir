@@ -148,6 +148,28 @@ async def test_table_shows_every_column_from_r16(env: Env) -> None:
         assert _row(app, "main")[:2] == ["main", "main"]
 
 
+async def test_a_finished_clone_shows_done_where_an_operation_would_be(env: Env) -> None:
+    """R29: the column that says what a clone is busy with says done when it is not."""
+    _, log = logger()
+    branch = "feature/done"
+    folder = new_clone(env.ws(), branch, None, log)
+    commit(folder, "work.txt", "work\n", "the work of this clone")
+    sh(folder, "git", "push", "-q", "-u", "origin", branch)
+    sh(folder, "git", "push", "-q", "origin", f"{branch}:main")
+    sh(folder, "git", "fetch", "-q", "origin")
+    new_clone(env.ws(), "feature/not-done", None, log)
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+
+        assert _row(app, "feature-done")[5] == "done"
+        # A clone that was only just made looks the same in every other column.
+        assert _row(app, "feature-not-done")[2] == "↑0 ↓0"
+        assert _row(app, "feature-not-done")[5] == ""
+        assert _row(app, "main")[5] == ""
+
+
 async def test_a_broken_clone_shows_its_error_in_its_row(env: Env) -> None:
     _, log = logger()
     broken = new_clone(env.ws(), "feature/broken", None, log)

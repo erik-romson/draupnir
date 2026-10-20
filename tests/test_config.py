@@ -18,6 +18,7 @@ def test_empty_config_gives_defaults(tmp_path: Path) -> None:
     assert config.workspace.repository is None
     assert config.workspace.base_branch is None
     assert config.workspace.local_files == ()
+    assert config.workspace.keep_on_remove == ()
     assert config.maven.enabled is None
     assert config.maven.shared_repository == Path("~/.m2/repository").expanduser()
     assert config.build.poll_seconds == 15
@@ -43,6 +44,7 @@ def test_config_reads_every_section(tmp_path: Path) -> None:
 repository = "git@github.example.com:acme/shop.git"
 base-branch = "develop"
 local-files = ["src/main/resources/local.properties"]
+keep-on-remove = ["notes/**"]
 
 [maven]
 enabled = false
@@ -78,6 +80,7 @@ clone-workspace = false
     assert config.workspace.repository == "git@github.example.com:acme/shop.git"
     assert config.workspace.base_branch == "develop"
     assert config.workspace.local_files == ("src/main/resources/local.properties",)
+    assert config.workspace.keep_on_remove == ("notes/**",)
     assert config.maven.enabled is False
     assert config.maven.shared_repository == Path("~/shared-repo").expanduser()
     assert config.build.poll_seconds == 5
@@ -167,6 +170,16 @@ def test_config_rejects_a_local_file_outside_the_project(tmp_path: Path) -> None
         load_config(tmp_path)
 
     assert "../secret.txt" in str(exc_info.value)
+
+
+def test_config_rejects_a_file_to_keep_outside_the_project(tmp_path: Path) -> None:
+    _write(tmp_path, '[workspace]\nkeep-on-remove = ["../secret.txt"]\n')
+
+    with pytest.raises(OperationError) as exc_info:
+        load_config(tmp_path)
+
+    assert "../secret.txt" in str(exc_info.value)
+    assert "workspace.keep-on-remove" in str(exc_info.value)
 
 
 def test_config_syntax_error_names_the_file_and_line(tmp_path: Path) -> None:

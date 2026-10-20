@@ -26,7 +26,14 @@ from draupnir.operations import (
     require_ready,
 )
 from draupnir.runner import require_git
-from draupnir.setup import check_removable, init, new_clone, prepare, remove_clone
+from draupnir.setup import (
+    check_removable,
+    ignored_files_note,
+    init,
+    new_clone,
+    prepare,
+    remove_clone,
+)
 from draupnir.status import ProjectStatus, read_status
 from draupnir.workspace import Workspace
 
@@ -101,14 +108,17 @@ def run_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _with_session_note(question: str, folder: Path) -> str:
-    """The question with the lines about the clone's terminal session under it (rule C3).
+def _with_removal_notes(ws: Workspace, question: str, folder: Path) -> str:
+    """The question with the lines about what the removal takes with it (rule C3, R30).
 
-    Each line is indented by two spaces, so confirm puts [y/N] after the last one. The caller
-    adds the lines only when the question is really asked on a terminal. So --yes reads no
-    session, and the error of confirm without a terminal keeps a first line that stands alone.
+    The lines name the files git ignores, which no other check sees, and then the clone's
+    terminal session. Each line is indented by two spaces, so confirm puts [y/N] after the
+    last one. The caller adds the lines only when the question is really asked on a terminal.
+    So --yes reads neither, and the error of confirm without a terminal keeps a first line
+    that stands alone.
     """
-    return "\n".join([question, *(f"  {line}" for line in cmux.session_note(folder))])
+    notes = [*ignored_files_note(ws, folder), *cmux.session_note(folder)]
+    return "\n".join([question, *(f"  {line}" for line in notes)])
 
 
 def run_remove(args: argparse.Namespace) -> int:
@@ -117,7 +127,7 @@ def run_remove(args: argparse.Namespace) -> int:
     folder = check_removable(ws, ws.resolve_folder(args.folder, Path.cwd()))
     question = f"Delete {folder} with its .m2repo and local files?"
     if not args.yes and sys.stdin.isatty():
-        question = _with_session_note(question, folder)
+        question = _with_removal_notes(ws, question, folder)
     if not confirm(question, args.yes):
         _log(f"Kept the clone {folder}. Nothing was deleted.")
         return 0
@@ -174,6 +184,8 @@ def _format_status_line(status: ProjectStatus) -> str:
     columns.append(f"{status.changed} changed, {status.untracked} untracked")
     if status.operation:
         columns.append(f"{status.operation} in progress")
+    elif status.finished:
+        columns.append("done")
     return "  ".join(columns)
 
 
@@ -276,8 +288,8 @@ def _remove_after_merge(ws: Workspace, folder: Path, args: argparse.Namespace) -
         if not ws.config.actions.offer_remove_after_merge or not sys.stdin.isatty():
             _log(f"Kept the clone {folder}. Remove it later with: {remove_command}")
             return
-        question = _with_session_note(
-            f"The branch is merged. Remove the clone {folder.name}?", folder
+        question = _with_removal_notes(
+            ws, f"The branch is merged. Remove the clone {folder.name}?", folder
         )
         if not confirm(question, False):
             _log(f"Kept the clone {folder}. Remove it later with: {remove_command}")

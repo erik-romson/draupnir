@@ -22,6 +22,7 @@ class WorkspaceConfig:
     main_branch: str | None = None
     base_branch: str | None = None
     local_files: tuple[str, ...] = ()
+    keep_on_remove: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -159,8 +160,8 @@ def _string_list(section: str, key: str, data: dict[str, Any]) -> list[str]:
     return result
 
 
-def _check_local_file(entry: str) -> None:
-    """Checks one workspace.local-files pattern.
+def _check_file_pattern(key: str, entry: str) -> None:
+    """Checks one pattern of workspace.local-files or workspace.keep-on-remove.
 
     A pattern works like a line in .gitignore, so it may start with '!' to take a file back,
     and with '/' to match from the project root. It always stays inside the project.
@@ -168,21 +169,28 @@ def _check_local_file(entry: str) -> None:
     pattern = entry.removeprefix("!").removeprefix("/")
     if not pattern or ".." in PurePosixPath(pattern).parts:
         raise OperationError(
-            f"{CONFIG_FILE_NAME} lists '{entry}' in workspace.local-files, but the pattern must "
+            f"{CONFIG_FILE_NAME} lists '{entry}' in workspace.{key}, but the pattern must "
             "match files inside the project and must not contain '..'."
         )
 
 
 def _load_workspace(data: dict[str, Any]) -> WorkspaceConfig:
-    _check_keys("workspace", data, ["repository", "main-branch", "base-branch", "local-files"])
-    local_files = _string_list("workspace", "local-files", data)
-    for entry in local_files:
-        _check_local_file(entry)
+    _check_keys(
+        "workspace",
+        data,
+        ["repository", "main-branch", "base-branch", "local-files", "keep-on-remove"],
+    )
+    patterns: dict[str, list[str]] = {}
+    for key in ("local-files", "keep-on-remove"):
+        patterns[key] = _string_list("workspace", key, data)
+        for entry in patterns[key]:
+            _check_file_pattern(key, entry)
     return WorkspaceConfig(
         repository=_optional_str("workspace", "repository", data),
         main_branch=_optional_str("workspace", "main-branch", data),
         base_branch=_optional_str("workspace", "base-branch", data),
-        local_files=tuple(local_files),
+        local_files=tuple(patterns["local-files"]),
+        keep_on_remove=tuple(patterns["keep-on-remove"]),
     )
 
 

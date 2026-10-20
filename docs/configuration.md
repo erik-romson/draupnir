@@ -26,6 +26,13 @@ local-files = [
   ".git/hooks/commit-msg",
   ".git/info/exclude",
 ]
+# Files that git ignores and that remove copies out of the clone before it deletes it. Each
+# line is a pattern, written the way a line in .gitignore is written. What matches is copied
+# into removed/<clone>-<date>/ in the workspace root, with the paths it has in the clone.
+# Default: nothing is kept. See "Removing a clone" below.
+keep-on-remove = [
+  "notes/**",
+]
 
 [maven]
 # Default: true when main/ has a pom.xml.
@@ -99,6 +106,73 @@ file, and draupnir writes the local files it copied into it, so a copy would thr
 away. When `local-files` lists it, draupnir adds the lines of `main/.git/info/exclude` to the
 clone's own exclude file instead. A line that is already there stays as it is, so the ignore rules
 written by hand in `main/` reach every clone, and running `prepare` again adds nothing twice.
+
+## Removing a clone
+
+A clone can read clean in every column and still hold work, because git ignores it. The notes
+and the plan written for a change often live in a folder that `.gitignore` covers, and the
+checks before a removal never see such a file. So the question that `remove` asks names them:
+
+```
+Delete /work/shop/feature-login with its .m2repo and local files?
+  It holds 408 KB in 11 files that git ignores: notes/.
+  They are deleted with the clone. Set keep-on-remove in draupnir.toml to copy the ones you
+  want to keep out of it first.
+  Its terminal session shop-feature-login is open, with 1 client attached.
+  The session is closed together with the clone. [y/N]
+```
+
+The count leaves out what draupnir itself put in the clone, which is `.m2repo` and
+`.mvn/maven.config`, and the files of `local-files`, because `main/` keeps its own copy of
+those. The folders are named largest first, and a clone with a build tree in it has more than
+fit on one line, so the line ends in "and 6 more". The names alone cannot say which of them
+hold work, which is why the line after them names the setting that keeps files. The same lines
+come with the question after a merged pull request, which is the moment a clone is usually
+removed.
+
+`keep-on-remove` copies files out of the clone before it is deleted. What the patterns match
+goes into `removed/<clone>-<date>/` in the workspace root, with the paths the files have in
+the clone. The workspace root is no git clone, so nothing there is committed by accident, and
+draupnir never deletes anything in `removed/` itself. A copy that fails stops the removal, so
+the clone is still there to copy from. `--force` skips the check for work that GitHub does not
+have, not the files you asked to keep.
+
+A plan written for a change belongs with the change once the work is done: in the issue it was
+written for, or in the commit history. `removed/` is the safety net for the day the clone goes
+before that happened.
+
+### Where to keep plans
+
+`keep-on-remove` is only as good as the places it names, so it is worth writing plans and notes
+somewhere a pattern can find them. What works is one folder for each piece of work, under one
+root, named after something that still identifies the work a year later:
+
+```
+tmp/plans/<key>-<slug>/
+```
+
+`<key>` is the issue key when the work has one, such as `SHOP-412`, and the date in
+`YYYY-MM-DD` form when it does not. `<slug>` is two to four words. Everything written about
+that piece of work goes in beside it: the plan, the questions it raised, the review, the step
+files, the report at the end.
+
+Then one line covers every workspace:
+
+```toml
+keep-on-remove = ["tmp/plans/**"]
+```
+
+A tool that drives the work from an issue may own a root of its own, such as `tmp/jira/<KEY>/`.
+Name those roots too, rather than moving what the tool writes:
+
+```toml
+keep-on-remove = ["tmp/plans/**", "tmp/jira/**", "tmp/github/**"]
+```
+
+Two habits make the setting miss. A plan written in `main/` is not in the clone that does the
+work, so the clone's removal never asks about it and it stays in `main/tmp/` for good. And a
+folder of plans at the clone root that `.gitignore` covers reads as committed documentation
+and is not: it is deleted with the clone like anything else git ignores.
 
 ## Environment variables
 

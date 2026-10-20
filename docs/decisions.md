@@ -312,6 +312,41 @@ command path. Without tmux or a socket, the line stays the cmux line of D54. The
 runs the same command, and cmux saves it for the tab, so a tab that cmux restores follows resizes
 too. A tab that was saved before keeps the cmux line, and the workspace lookup accepts both.
 
+**D59. Finished is read from git, not set by hand.** A flag the user sets is wrong the moment
+they commit one more line, so draupnir works the state out instead (R29). Three parts of the
+answer were already there: the counts of `git status`, the operation markers in the git folder,
+and the comparison D21 makes before a removal. Two choices matter. The first is that the branch
+must have been pushed, or GitHub must have deleted it after a merge: a clone that was only just
+made is ahead of the default branch by nothing either, so without this part every new clone
+would read `done` on the day it was made. The second is that the commits are compared by their
+change and not by their name, because `git rev-list --left-right --count` counts names and
+GitHub's "rebase and merge" gives every commit a new one. `git rev-list --cherry-pick
+--right-only --no-merges` answers the real question. A squash merge is still missed, because it
+turns the whole branch into one commit that matches nothing; D21 lives with the same limit. The
+two reads that cost something, the stash and the comparison of the changes, run only for a clone
+that passed every cheap check, so a clone that is clearly busy costs nothing extra. Even so, the
+comparison took about a second on a branch 47 commits from a main branch 166 commits ahead, and
+the dashboard reads the status every few seconds. Its answer depends on nothing but the two
+commits, so it is kept for that pair, in memory only, the way the build results are (Q12). The
+word goes in the `In progress` column, which is empty for almost every clone and already answers
+"what is this clone busy with".
+
+**D60. The files git ignores are named, and kept only when asked.** Removing a clone ends in a
+recursive delete, and the checks before it never see a file that `.gitignore` covers: such a file
+is not untracked. A clone that reads clean in every column can therefore hold the notes and the
+plan that were written for the change. So the question names them, with their size and the
+folders they are in (R30), and the same lines come with the question after a merged pull request,
+because that is when a clone is usually removed.
+
+The removal is not refused over them. Ignored files are ignored on purpose, and a tool that stops
+on build output nobody wants is a tool people pass `--force` to every time. draupnir also does
+not know what a plan is: `keep-on-remove` takes patterns, the same way `local-files` does, and the
+two are symmetric on purpose, one copying files into a new clone and the other copying them out
+of one that is going away. The copies go to `removed/` in the workspace root, which is no git
+clone, so nothing lands in a commit by accident, and draupnir never empties that folder itself.
+What draupnir put in the clone is left out of the count, so a large `.m2repo` is never even
+walked, and so are the files of `local-files`, because `main/` keeps its own copy.
+
 **D26. The dashboard refreshes on a timer.** Every `ui.refresh-seconds`. The timer never fetches,
 and skips a read while an action or another read runs.
 

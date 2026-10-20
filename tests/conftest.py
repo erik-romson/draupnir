@@ -15,6 +15,7 @@ from fake_gh import STATE_VARIABLE, FakeGh
 
 from draupnir.github import reset_build_estimate_cache, reset_login_cache
 from draupnir.setup import init
+from draupnir.status import reset_comparison_cache
 from draupnir.workspace import Workspace
 
 # The folders the stubs are joined with to make the PATH of a test. The PATH of the session
@@ -69,6 +70,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     fake.reset()
     reset_login_cache()
     reset_build_estimate_cache()
+    reset_comparison_cache()
 
     for name in list(os.environ):
         if name.startswith("DRAUPNIR_"):

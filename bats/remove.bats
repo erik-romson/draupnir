@@ -152,3 +152,18 @@ close_count() {
     assert_dir_not_exist "$CLONE"
     assert_equal "$(close_count)" 0
 }
+
+@test "remove keeps what keep-on-remove matches, next to the clones" {
+    set_config workspace 'keep-on-remove = ["notes/**"]'
+    printf '/notes/\n' >> "$CLONE/.git/info/exclude"
+    mkdir -p "$CLONE/notes"
+    printf 'the plan\n' > "$CLONE/notes/plan.md"
+
+    run draupnir remove feature-a --yes
+    assert_success
+
+    assert_dir_not_exist "$CLONE"
+    local kept
+    kept="$(find "$ROOT/removed" -name plan.md)"
+    assert_equal "$(cat "$kept")" "the plan"
+}

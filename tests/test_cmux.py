@@ -66,6 +66,7 @@ def _status(name: str, **changes: object) -> ProjectStatus:
         "operation": None,
         "error": None,
         "head": HEAD,
+        "finished": False,
     }
     fields.update(changes)
     return ProjectStatus(**fields)  # type: ignore[arg-type]
@@ -134,6 +135,25 @@ def test_sidebar_status_reports_a_branch_that_github_no_longer_has() -> None:
 
     assert status is not None
     assert (status.text, status.color) == ("feature-a is deleted on GitHub", YELLOW)
+
+
+def test_sidebar_status_leaves_out_a_branch_of_a_clone_that_is_finished() -> None:
+    """GitHub deletes the branch when it merges, and that clone is done, not unfinished (R29)."""
+    statuses = [
+        _status("main"),
+        _status(
+            "feature-a",
+            upstream_gone=True,
+            ahead_upstream=None,
+            behind_upstream=None,
+            finished=True,
+        ),
+    ]
+
+    status = sidebar_status(statuses, {})
+
+    assert status is not None
+    assert (status.text, status.color) == ("clean", GREEN)
 
 
 def test_sidebar_status_reports_a_failed_build_of_the_current_commit() -> None:

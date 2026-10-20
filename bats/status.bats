@@ -102,3 +102,28 @@ setup() {
     assert_success
     assert_line --regexp "^feature-a .*rebase in progress"
 }
+
+@test "status says done when the main branch has every change of a clone" {
+    run draupnir new feature-a
+    assert_success
+    local clone="$ROOT/feature-a"
+    commit_fixture "$clone" edits/note "Add a note" > /dev/null
+    git -C "$clone" push -q -u origin feature-a
+    git -C "$clone" push -q origin feature-a:main
+    git -C "$clone" fetch -q origin
+
+    run draupnir status
+    assert_success
+    assert_line --regexp "^feature-a .*done$"
+}
+
+@test "status says nothing about a clone that was only just made" {
+    run draupnir new feature-a
+    assert_success
+
+    run draupnir status
+    assert_success
+    # A new clone is ahead of the main branch by nothing either, so only the push tells them
+    # apart (R29).
+    assert_line --regexp "^feature-a .*main ↑0 ↓0 {2}not pushed {2}0 changed, 0 untracked$"
+}
