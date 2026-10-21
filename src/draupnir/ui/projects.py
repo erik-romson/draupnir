@@ -96,7 +96,8 @@ ACTION_BUTTONS: tuple[ActionButton, ...] = (
         "push-follow",
         "Push and follow build",
         Needs.PROJECT,
-        "Pushes the branch, with a safe force after a rebase, and waits for its build on GitHub.",
+        "Pushes the branch, with a safe force after a rebase, and then follows its build on "
+        "GitHub in the background. The other buttons stay free while the build runs.",
     ),
     ActionButton(
         "ff-main",
@@ -224,10 +225,13 @@ def status_row(status: ProjectStatus, main_branch: str, build: BuildState | None
     return [Text(status.name), branch, vs_main, vs_upstream, changes, operation, build_cell]
 
 
-def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text:
+def details_text(
+    status: ProjectStatus | None, build: BuildState | None, following: bool = False
+) -> Text:
     """The details line under the table, for the selected clone.
 
-    A job with a web page is a link: a click on it opens the job in the browser.
+    A job with a web page is a link: a click on it opens the job in the browser. following is
+    true while draupnir waits for this clone's build in the background (D61).
     """
     if status is None:
         return Text("")
@@ -242,6 +246,8 @@ def details_text(status: ProjectStatus | None, build: BuildState | None) -> Text
             f"A {status.operation} is in progress. Finish it or abort it before you start an "
             "action on this clone."
         )
+    if following:
+        lines.append("draupnir is following this build. Stop waiting ends that.")
     text = Text("\n".join(lines))
     if build is None:
         return text
@@ -346,6 +352,7 @@ class ProjectsView(Widget):
         self._statuses: list[ProjectStatus] = []
         self._builds: dict[str, BuildState] = {}
         self._busy = False
+        self._following: frozenset[str] = frozenset()
 
     def compose(self) -> ComposeResult:
         with Grid(id="project-buttons"):
@@ -399,6 +406,11 @@ class ProjectsView(Widget):
         self._busy = busy
         self._update_buttons()
 
+    def set_following(self, names: Collection[str]) -> None:
+        """Names the clones whose build draupnir follows in the background (D61)."""
+        self._following = frozenset(names)
+        self._update_details()
+
     def selected_status(self) -> ProjectStatus | None:
         """The status of the selected row, or None when the table is empty."""
         row = self.table.cursor_row
@@ -429,7 +441,8 @@ class ProjectsView(Widget):
     def _update_details(self) -> None:
         selected = self.selected_status()
         build = self._builds.get(selected.name) if selected else None
-        self.details.update(details_text(selected, build))
+        following = selected is not None and selected.name in self._following
+        self.details.update(details_text(selected, build, following))
 
     @on(DataTable.RowHighlighted, "#table")
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:

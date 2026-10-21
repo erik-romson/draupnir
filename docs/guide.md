@@ -166,8 +166,14 @@ branch, so they are disabled for `main/` and for a clone that sits on the defaul
 clone is disabled for `main/` alone, and removes a clone on any branch. Actions that change the
 default branch or delete a folder ask first. Only one action runs at a time.
 
-The output area shows every command as it runs. "Stop waiting" ends the wait for a build, not the
-build itself. "Build status" reads the result again later.
+"Push and follow build" is the exception. It pushes, which takes seconds, and then follows the
+build in the background. The buttons are free again at once, so you can work on another clone
+while GitHub builds, and several clones can be followed at the same time. The Build column and the
+details line of a followed clone keep up with the build, and a notification says how it ended.
+
+The output area shows every command as it runs. Lines about a followed build have the clone in
+front of them. "Stop waiting" ends the wait for every build draupnir follows, and the wait of the
+running action, but never a build itself. "Build status" reads the result again later.
 
 **Open a build.** The Build column looks like a button in the colour of the state. Click it, or
 press `g` on the selected row, to open the build in the browser. draupnir opens the first failed

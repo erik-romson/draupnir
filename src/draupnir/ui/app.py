@@ -37,8 +37,9 @@ from draupnir.operations import (
     check_build,
     fast_forward_main,
     fetch_all,
+    follow_build,
     pr_build_and_merge,
-    push_and_follow,
+    push_for_build,
     rebase_on_main,
 )
 from draupnir.runner import LogFn
@@ -117,6 +118,9 @@ class DraupnirApp(App[None]):
         self.busy = False
         self.running_title: str | None = None
         self.cancel_event = threading.Event()
+        # The builds draupnir follows in the background, by folder name, with the event that
+        # ends each wait. A followed build does not make the dashboard busy (D61).
+        self.watches: dict[str, threading.Event] = {}
         # True while a status read runs in a worker thread.
         self.reading = False
         # The last line written into the cmux sidebar, so the same line is not written twice.
@@ -173,6 +177,8 @@ class DraupnirApp(App[None]):
         # A thread worker cannot be cancelled from outside. Ending a wait for a build here lets
         # the dashboard quit at once, and the build on GitHub keeps running.
         self.cancel_event.set()
+        for cancel in self.watches.values():
+            cancel.set()
         if self.sidebar_enabled and self.sidebar_shows is not None:
             # The dashboard is the only writer of its line, so it takes the line away when it
             # quits. This runs while the app stops, so a worker thread is no longer an option.
@@ -316,6 +322,7 @@ class DraupnirApp(App[None]):
         self.cancel_event = threading.Event()
         self.output.begin_action(title)
         self.projects.set_busy(True)
+        self._update_stop_button()
         self._run_operation(title, operation, self.cancel_event, on_conflict, on_success)
         return True
 
@@ -396,7 +403,12 @@ class DraupnirApp(App[None]):
         self.running_title = None
         self.output.end_action()
         self.projects.set_busy(False)
+        self._update_stop_button()
         self.request_status_read()
+
+    def _update_stop_button(self) -> None:
+        """Enables "Stop waiting" while an action runs or a build is followed (D61)."""
+        self.output.set_stop_enabled(self.busy or bool(self.watches))
 
     # ----- Messages from the widgets ----------------------------------------------------
 
@@ -426,9 +438,17 @@ class DraupnirApp(App[None]):
 
     @on(OutputArea.StopWaitingRequested)
     def _stop_waiting(self) -> None:
-        if not self.busy or self.cancel_event.is_set():
+        """Ends the wait of the running action and of every build draupnir follows (D61)."""
+        stopped = False
+        if self.busy and not self.cancel_event.is_set():
+            self.cancel_event.set()
+            stopped = True
+        for cancel in self.watches.values():
+            if not cancel.is_set():
+                cancel.set()
+                stopped = True
+        if not stopped:
             return
-        self.cancel_event.set()
         self.output.write_line(
             "draupnir stops waiting. A command that runs now still runs to its end.", "yellow"
         )
@@ -694,12 +714,11 @@ class DraupnirApp(App[None]):
         return record
 
     def action_push_and_follow(self) -> None:
-        """Pushes the selected clone and waits for the build of the pushed commit (R17, R21).
+        """Pushes the selected clone, then follows the build of the pushed commit (R17, R21).
 
-        The push uses a safe force on a feature branch (D9). The Build column shows every new
-        state while the wait runs. "Stop waiting" ends the wait, and the column keeps the last
-        state it saw, because the build on GitHub keeps running (R19). A build that is not green
-        ends the action with a message.
+        Only the push is an action. It takes seconds, and it uses a safe force on a feature
+        branch (D9). The build is followed in the background afterwards, so the buttons are
+        free again while GitHub builds, and several clones can be followed at once (D61).
         """
         selected = self.projects.selected_status()
         if selected is None:
@@ -707,15 +726,116 @@ class DraupnirApp(App[None]):
         folder = selected.folder
         name = selected.name
         ws = self.ws
-        on_update = self._build_recorder(name)
 
-        def operation(log: LogFn, cancel: threading.Event) -> BuildState:
-            state = push_and_follow(ws, folder, log, cancel, on_update)
-            if state.state not in (SUCCESS, CANCELLED):
-                raise OperationError(build_result_message(name, state))
-            return state
+        def operation(log: LogFn, _cancel: threading.Event) -> str:
+            return push_for_build(ws, folder, log)
 
-        self.start(f"Push {name} and follow the build", operation)
+        def on_success(result: object) -> None:
+            if isinstance(result, str):
+                self.follow_build_of(folder, name, result)
+
+        self.start(f"Push {name}", operation, on_success=on_success)
+
+    def follow_build_of(self, folder: Path, name: str, sha: str) -> None:
+        """Starts following the build of sha in folder, in a worker thread (D61).
+
+        A clone is followed once. When it is followed already, for example after a second push,
+        the older wait ends and this one takes its place. Its lines go into the output with the
+        clone in front of them, because another action can write there at the same time.
+        """
+        old = self.watches.get(name)
+        if old is not None:
+            old.set()
+        cancel = threading.Event()
+        self.watches[name] = cancel
+        self.projects.set_following(self.watches.keys())
+        self._update_stop_button()
+        self.output.write_line(f"{name}: following the build of commit {sha[:10]}.", "bold")
+        self._watch_build(folder, name, sha, cancel)
+
+    @work(thread=True, group="build-watch", exit_on_error=False)
+    def _watch_build(self, folder: Path, name: str, sha: str, cancel: threading.Event) -> None:
+        """Waits for one build, without making the dashboard busy."""
+        ws = self.ws
+
+        def on_update(state: BuildState) -> None:
+            self._call_ui(self._record_watched_build, name, cancel, state)
+
+        def log(line: str) -> None:
+            self._call_ui(self.output.write_line, f"{name}: {line}")
+
+        try:
+            state = follow_build(ws, folder, sha, log, cancel, on_update)
+        except OperationError as exc:
+            self._call_ui(self._build_watch_failed, name, str(exc))
+        except Exception:
+            self._call_ui(
+                self._build_watch_failed,
+                name,
+                "draupnir stopped following the build because of an unexpected error. The "
+                "output shows the details.\n" + traceback.format_exc(),
+            )
+        else:
+            self._call_ui(self._build_watch_ended, name, cancel, state)
+        finally:
+            self._call_ui(self._build_watch_done, name, cancel)
+
+    def _is_current_watch(self, name: str, cancel: threading.Event) -> bool:
+        """True while cancel is the wait the dashboard follows for the clone called name.
+
+        A second push to the same clone starts a newer wait. The older one then says nothing
+        more, so an older commit's build never takes the place of the new one.
+        """
+        return self.watches.get(name) is cancel
+
+    def _record_watched_build(self, name: str, cancel: threading.Event, state: BuildState) -> None:
+        if self._is_current_watch(name, cancel):
+            self._record_build(name, state)
+
+    def _build_watch_ended(self, name: str, cancel: threading.Event, state: BuildState) -> None:
+        """Says how the followed build ended, and reads the status again."""
+        if not self._is_current_watch(name, cancel):
+            return
+        if state.state == CANCELLED:
+            self.output.write_line(
+                f"{name}: stopped following the build. It keeps running on GitHub.", "yellow"
+            )
+            self.notify(
+                "The build keeps running on GitHub. Use Build status to read it again later.",
+                title=f"Stopped following the build of {name}",
+                severity="warning",
+            )
+            return
+        message = build_result_message(name, state)
+        if state.state == SUCCESS:
+            self.output.write_line(message, "bold green")
+            self.notify(message, title=f"Build of {name}")
+        else:
+            self.output.write_line(message, "red")
+            self.notify(
+                message.strip().splitlines()[0],
+                title=f"Build of {name}",
+                severity="error",
+                timeout=10,
+            )
+        self.request_status_read()
+
+    def _build_watch_failed(self, name: str, message: str) -> None:
+        self.output.write_line(message, "red")
+        self.notify(
+            message.strip().splitlines()[0],
+            title=f"Following the build of {name} stopped",
+            severity="error",
+            timeout=10,
+        )
+
+    def _build_watch_done(self, name: str, cancel: threading.Event) -> None:
+        """Forgets the wait that just ended, unless a newer one took its place."""
+        if not self._is_current_watch(name, cancel):
+            return
+        del self.watches[name]
+        self.projects.set_following(self.watches.keys())
+        self._update_stop_button()
 
     def action_build_status(self) -> None:
         """Asks GitHub once for the build state of the selected clone's HEAD (R17, R20)."""

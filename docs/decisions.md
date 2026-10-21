@@ -352,7 +352,22 @@ and skips a read while an action or another read runs.
 
 **D33. One action at a time.** Every button is disabled while an action runs. Only one status read
 runs at a time, and a queued read runs after it, so an older result never replaces a newer one.
-The table updates cells in place, so the selection and scroll position stay.
+The table updates cells in place, so the selection and scroll position stay. D61 took the wait for
+a build out of this rule.
+
+**D61. A followed build is not an action.** Push and follow build used to be one action, so the
+whole dashboard was disabled until GitHub finished building, which takes minutes. Now the push is
+the action, and it ends when the branch is on GitHub. The wait runs in a worker thread of its own
+that reads and nothing else, and the buttons are free again. Several clones can be followed at
+once, one wait per clone, and a second push to the same clone ends the older wait and follows the
+new commit. The wait only asks GitHub for the build state, so it cannot collide with an action
+that works on a clone. Its lines go into the output with the clone in front of them, because an
+action can write there at the same time, and the details line of a followed clone says that
+draupnir is waiting. "Stop waiting" ends every wait at once, and the builds keep running on
+GitHub. How the build ended is told by a notification, because the user has moved on by then.
+Rejected: one lock per clone, which would free every action but leaves `main/`, which
+fast-forward main and the pull request flow both write, without a lock of its own. The pull
+request flow still holds the dashboard, because it merges once the build is green.
 
 **D47. Remove clone asks for a clone, not for a feature branch.** A clone that is on the default
 branch holds no work of its own once it is merged, so the button is enabled for every clone but

@@ -79,7 +79,7 @@ in the [user guide](guide.md#concepts).
   | Open IDE | Start the IDE in the clone |
   | cmux workspace | Go to the clone's own cmux workspace, or open it with the clone's terminal session as R27 says. Only shown in cmux |
   | Rebase on main | Refuse when tracked files are changed. Fetch, then rebase on `origin/<default>`. On a conflict, stop, leave the rebase in progress, list the files, and offer to open the IDE |
-  | Push and follow build | Push the branch. Feature branches use `--force-with-lease --force-if-includes`. The default branch is never force-pushed. Then follow the build of the pushed commit |
+  | Push and follow build | Push the branch. Feature branches use `--force-with-lease --force-if-includes`. The default branch is never force-pushed. Then follow the build of the pushed commit in the background |
   | Fast-forward main | Only when the branch is on top of `origin/<default>`. Push `HEAD` to the default branch without force. Then update `main/` |
   | Pull request and merge | Push, create a pull request or reuse the open one, follow the build, merge with rebase only when the build succeeds, then update `main/` |
   | Build status | Ask GitHub once for the build result of the current commit |
@@ -91,7 +91,9 @@ in the [user guide](guide.md#concepts).
   `main/` and for every clone that is on the default branch. Remove clone is disabled for `main/`
   only, because a clone on the default branch can be removed as well.
 - **R19.** An output area shows every command and its output while it runs. Only one action runs
-  at a time. Waiting for a build can be stopped without stopping the build itself.
+  at a time. Following the build of a pushed commit is not an action: the dashboard keeps working
+  while it waits, and it can follow the builds of several clones at once. Waiting for a build can
+  be stopped without stopping the build itself.
 
 ### Following builds
 
@@ -148,7 +150,7 @@ See [what draupnir does not manage](troubleshooting.md#what-draupnir-does-not-ma
 These are left out on purpose, and can be revisited later.
 
 - **Parallel actions.** Only one action runs at a time, and only inside one dashboard. Following
-  two builds from the same dashboard at the same time is not supported.
+  a build is the one thing that runs beside an action.
 - **Desktop notifications.** The dashboard only shows results inside its own output area and
   notifications. It does not send a notification to the desktop.
 - **Remembered build results.** Build results are kept in memory only, for the life of the

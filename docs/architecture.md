@@ -18,7 +18,7 @@ src/draupnir/
   cmux.py         finds the cmux tool, starts and closes the terminal session of a clone, opens
                   and finds its workspace, writes the sidebar status
   ui/
-    app.py        the Textual app: tabs, key bindings, running one action at a time
+    app.py        the Textual app: tabs, key bindings, one action at a time, followed builds
     projects.py   the Projects tab
     newclone.py   the New clone tab
     confirm.py    the yes/no dialog

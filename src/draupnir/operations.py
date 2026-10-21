@@ -255,6 +255,33 @@ def check_build(ws: Workspace, folder: Path, log: LogFn) -> BuildState:
     return state
 
 
+def push_for_build(ws: Workspace, folder: Path, log: LogFn) -> str:
+    """Pushes folder's branch for a build to follow, and returns the pushed commit.
+
+    The checks run before anything changes: the rule 6 checks first, then that gh is installed
+    and logged in, so a missing gh stops before the push and not after it.
+    """
+    require_ready(ws, folder)
+    require_gh(folder)
+    return push(ws, folder, log)
+
+
+def follow_build(
+    ws: Workspace,
+    folder: Path,
+    sha: str,
+    log: LogFn,
+    cancel: threading.Event,
+    on_update: Callable[[BuildState], None] | None = None,
+) -> BuildState:
+    """Waits for the build of sha, with the times from [build] in draupnir.toml (R21).
+
+    cancel ends the wait without stopping the build on GitHub.
+    """
+    timing = BuildTiming.from_config(ws.config.build)
+    return wait_for_build(folder, sha, log, cancel, timing, on_update)
+
+
 def push_and_follow(
     ws: Workspace,
     folder: Path,
@@ -264,15 +291,11 @@ def push_and_follow(
 ) -> BuildState:
     """Pushes folder's branch, then waits for the build of the pushed commit (R17, R21).
 
-    The checks run before anything changes: the rule 6 checks first, then that gh is installed
-    and logged in, so a missing gh stops before the push. The wait uses the times from
-    [build] in draupnir.toml, and cancel ends it without stopping the build on GitHub.
+    The command line uses this, so the push and the wait are one call there. The dashboard
+    pushes and follows in two steps, so its buttons are free again while the build runs (D61).
     """
-    require_ready(ws, folder)
-    require_gh(folder)
-    sha = push(ws, folder, log)
-    timing = BuildTiming.from_config(ws.config.build)
-    return wait_for_build(folder, sha, log, cancel, timing, on_update)
+    sha = push_for_build(ws, folder, log)
+    return follow_build(ws, folder, sha, log, cancel, on_update)
 
 
 def _is_ancestor(folder: Path, ancestor: str, descendant: str) -> bool:

@@ -17,7 +17,8 @@ class OutputArea(Widget):
     """Shows the log of the running action, and lets the user stop waiting for a build.
 
     The widget holds no logic. The "Stop waiting" button posts `StopWaitingRequested`, and the
-    app sets the cancel event of the running action.
+    app sets the cancel event of the running action and of every build it follows. The app also
+    says when the button is enabled, because a build can be followed while no action runs (D61).
     """
 
     DEFAULT_CSS = """
@@ -37,7 +38,8 @@ class OutputArea(Widget):
             "Stop waiting",
             id="stop-waiting",
             disabled=True,
-            tooltip="Stops waiting for the build. The build keeps running on GitHub.",
+            tooltip="Stops waiting for every build draupnir follows. The builds keep running "
+            "on GitHub.",
         )
         self.log_view = RichLog(
             id="output-log", wrap=True, markup=False, highlight=False, max_lines=5000
@@ -54,15 +56,17 @@ class OutputArea(Widget):
         self.log_view.write(Text(line, style=style))
 
     def begin_action(self, title: str) -> None:
-        """Shows that the action called title has started, and enables "Stop waiting"."""
+        """Shows that the action called title has started."""
         self.title_label.update(f"{OUTPUT_TITLE}: {title}")
         self.write_line(f"=== {title}", "bold")
-        self.stop_button.disabled = False
 
     def end_action(self) -> None:
-        """Shows that no action runs any more, and disables "Stop waiting"."""
+        """Shows that no action runs any more."""
         self.title_label.update(OUTPUT_TITLE)
-        self.stop_button.disabled = True
+
+    def set_stop_enabled(self, enabled: bool) -> None:
+        """Enables "Stop waiting" while there is something to stop."""
+        self.stop_button.disabled = not enabled
 
     @on(Button.Pressed, "#stop-waiting")
     def _stop_pressed(self, event: Button.Pressed) -> None:

@@ -380,20 +380,68 @@ async def test_ui_push_and_follow_updates_the_build_column_while_waiting(env: En
             lambda: _build_cell(app, "feature-follow") == "pending",
             "the Build column shows the running build",
         )
-        # The action still waits, so the column changed while waiting.
-        assert app.busy
+        # The push has ended, and the build is followed in the background (D61).
+        assert not app.busy
+        assert "feature-follow" in app.watches
         assert sh(env.remote, "git", "rev-parse", "feature/follow") == sha
-        # The details line shows the jobs of the selected clone's build.
-        assert "build: pending" in str(app.projects.details.content)
+        # The details line shows the jobs of the selected clone's build, and the wait.
+        details = str(app.projects.details.content)
+        assert "build: pending" in details
+        assert "draupnir is following this build." in details
 
         env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
         await settle(app, pilot)
 
         assert _build_cell(app, "feature-follow") == "success"
         assert app.builds["feature-follow"].sha == sha
+        assert app.watches == {}
         lines = _output_lines(app)
-        assert "=== Done: Push feature-follow and follow the build" in lines
-        assert "  build: success" in lines
+        assert "=== Done: Push feature-follow" in lines
+        assert any(line.startswith("feature-follow: ") for line in lines)
+
+
+async def test_ui_another_action_runs_while_a_build_is_followed(env: Env) -> None:
+    """The dashboard is free while it follows a build, so another clone can be worked on (D61)."""
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/followed", None, log)
+    other = new_clone(env.ws(), "feature/other", None, log)
+    sha = commit(folder, "feature.txt", "feature work\n", "add feature file")
+    other_sha = commit(other, "other.txt", "other work\n", "add other file")
+    env.gh.set_build(sha, [Poll(check_runs=[running("build")])])
+    env.gh.set_build(other_sha, [Poll(check_runs=[CheckRun("build")])])
+
+    app = DraupnirApp(env.ws())
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        _select(app, "feature-followed")
+        await pilot.pause()
+
+        await pilot.click("#push-follow")
+        await wait_until(
+            pilot,
+            lambda: "feature-followed" in app.watches,
+            "the build of the pushed clone is followed",
+        )
+        # Every button is enabled again, although the build is still running.
+        assert not app.busy
+        assert not app.projects.buttons["build-status"].disabled
+        assert not app.output.stop_button.disabled
+
+        _select(app, "feature-other")
+        await pilot.pause()
+        await pilot.click("#build-status")
+        await wait_until(
+            pilot,
+            lambda: "=== Done: Build status of feature-other" in _output_lines(app),
+            "the build status of the other clone",
+        )
+        # The first clone is still followed while the second action ran.
+        assert "feature-followed" in app.watches
+        assert _build_cell(app, "feature-other") == "success"
+
+        env.gh.set_build(sha, [Poll(check_runs=[CheckRun("build")])])
+        await settle(app, pilot)
+        assert _build_cell(app, "feature-followed") == "success"
 
 
 async def test_ui_stop_waiting_ends_the_action_and_keeps_the_last_state(env: Env) -> None:
@@ -414,13 +462,13 @@ async def test_ui_stop_waiting_ends_the_action_and_keeps_the_last_state(env: Env
             lambda: _build_cell(app, "feature-stop") == "pending",
             "the Build column shows the running build",
         )
-        assert app.busy
+        assert "feature-stop" in app.watches
         assert not app.output.stop_button.disabled
 
         await pilot.click("#stop-waiting")
         await settle(app, pilot)
 
-        assert not app.busy
+        assert app.watches == {}
         assert app.output.stop_button.disabled
         # The column keeps the last state it saw. The build on GitHub was not touched: the fake
         # gh was only asked to read, and the build there still runs.
@@ -428,10 +476,8 @@ async def test_ui_stop_waiting_ends_the_action_and_keeps_the_last_state(env: Env
         assert app.builds["feature-stop"].state == "pending"
         assert all(call.args[0] == "api" for call in env.gh.calls())
         lines = _output_lines(app)
-        assert "=== Stopped waiting: Push feature-stop and follow the build" in lines
-        assert not any(line.startswith("=== Done: Push feature-stop") for line in lines)
-        text = " ".join(lines)
-        assert "The build on GitHub keeps running." in text
+        assert "feature-stop: stopped following the build. It keeps running on GitHub." in lines
+        assert not any(line.startswith("feature-stop: The build of commit") for line in lines)
 
         # A new action starts once the wait has ended.
         await pilot.click("#build-status")
