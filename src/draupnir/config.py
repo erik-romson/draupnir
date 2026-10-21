@@ -23,6 +23,7 @@ class WorkspaceConfig:
     base_branch: str | None = None
     local_files: tuple[str, ...] = ()
     keep_on_remove: tuple[str, ...] = ()
+    throwaway_branches: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -174,23 +175,48 @@ def _check_file_pattern(key: str, entry: str) -> None:
         )
 
 
+def _check_branch_pattern(entry: str) -> None:
+    """Checks one pattern of workspace.throwaway-branches.
+
+    A pattern is matched against a branch name, with '*' and '?' as in a shell. It names
+    branches, so a leading 'refs/heads/' is a mistake, and an empty pattern matches nothing
+    useful.
+    """
+    if not entry.strip() or entry.startswith("refs/"):
+        raise OperationError(
+            f"{CONFIG_FILE_NAME} lists '{entry}' in workspace.throwaway-branches, but a pattern "
+            "must be a branch name such as 'backup/*', without 'refs/heads/' in front of it."
+        )
+
+
 def _load_workspace(data: dict[str, Any]) -> WorkspaceConfig:
     _check_keys(
         "workspace",
         data,
-        ["repository", "main-branch", "base-branch", "local-files", "keep-on-remove"],
+        [
+            "repository",
+            "main-branch",
+            "base-branch",
+            "local-files",
+            "keep-on-remove",
+            "throwaway-branches",
+        ],
     )
     patterns: dict[str, list[str]] = {}
     for key in ("local-files", "keep-on-remove"):
         patterns[key] = _string_list("workspace", key, data)
         for entry in patterns[key]:
             _check_file_pattern(key, entry)
+    throwaway_branches = _string_list("workspace", "throwaway-branches", data)
+    for entry in throwaway_branches:
+        _check_branch_pattern(entry)
     return WorkspaceConfig(
         repository=_optional_str("workspace", "repository", data),
         main_branch=_optional_str("workspace", "main-branch", data),
         base_branch=_optional_str("workspace", "base-branch", data),
         local_files=tuple(patterns["local-files"]),
         keep_on_remove=tuple(patterns["keep-on-remove"]),
+        throwaway_branches=tuple(throwaway_branches),
     )
 
 

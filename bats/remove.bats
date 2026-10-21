@@ -80,6 +80,31 @@ close_count() {
     assert_dir_exist "$CLONE"
 }
 
+@test "remove deletes a clone whose only unpushed branch is a throwaway branch" {
+    set_config workspace 'throwaway-branches = ["backup/*"]'
+    git -C "$CLONE" checkout -q -b backup/feature-a-20260101
+    commit_fixture "$CLONE" edits/note "Add a note" > /dev/null
+    git -C "$CLONE" checkout -q feature-a
+
+    run draupnir remove feature-a --yes
+    assert_success
+
+    assert_dir_not_exist "$CLONE"
+}
+
+@test "remove still refuses a branch that throwaway-branches does not name" {
+    set_config workspace 'throwaway-branches = ["backup/*"]'
+    git -C "$CLONE" checkout -q -b side-work
+    commit_fixture "$CLONE" edits/note "Add a note" > /dev/null
+    git -C "$CLONE" checkout -q feature-a
+
+    run draupnir remove feature-a --yes
+    assert_failure 1
+    assert_output --partial "Branch side-work"
+
+    assert_dir_exist "$CLONE"
+}
+
 @test "remove deletes a clone whose commits are all on GitHub" {
     commit_fixture "$CLONE" edits/note "Add a note" > /dev/null
     run draupnir push feature-a

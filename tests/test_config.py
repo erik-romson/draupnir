@@ -19,6 +19,7 @@ def test_empty_config_gives_defaults(tmp_path: Path) -> None:
     assert config.workspace.base_branch is None
     assert config.workspace.local_files == ()
     assert config.workspace.keep_on_remove == ()
+    assert config.workspace.throwaway_branches == ()
     assert config.maven.enabled is None
     assert config.maven.shared_repository == Path("~/.m2/repository").expanduser()
     assert config.build.poll_seconds == 15
@@ -45,6 +46,7 @@ repository = "git@github.example.com:acme/shop.git"
 base-branch = "develop"
 local-files = ["src/main/resources/local.properties"]
 keep-on-remove = ["notes/**"]
+throwaway-branches = ["backup/*"]
 
 [maven]
 enabled = false
@@ -81,6 +83,7 @@ clone-workspace = false
     assert config.workspace.base_branch == "develop"
     assert config.workspace.local_files == ("src/main/resources/local.properties",)
     assert config.workspace.keep_on_remove == ("notes/**",)
+    assert config.workspace.throwaway_branches == ("backup/*",)
     assert config.maven.enabled is False
     assert config.maven.shared_repository == Path("~/shared-repo").expanduser()
     assert config.build.poll_seconds == 5
@@ -180,6 +183,16 @@ def test_config_rejects_a_file_to_keep_outside_the_project(tmp_path: Path) -> No
 
     assert "../secret.txt" in str(exc_info.value)
     assert "workspace.keep-on-remove" in str(exc_info.value)
+
+
+def test_config_rejects_a_branch_pattern_written_as_a_ref(tmp_path: Path) -> None:
+    _write(tmp_path, '[workspace]\nthrowaway-branches = ["refs/heads/backup/*"]\n')
+
+    with pytest.raises(OperationError) as exc_info:
+        load_config(tmp_path)
+
+    assert "workspace.throwaway-branches" in str(exc_info.value)
+    assert "backup/*" in str(exc_info.value)
 
 
 def test_config_syntax_error_names_the_file_and_line(tmp_path: Path) -> None:

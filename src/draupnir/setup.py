@@ -7,6 +7,7 @@ import shutil
 from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from draupnir import maven
@@ -284,6 +285,13 @@ def _toml_template(url: str | None) -> str:
 # it for notes and plans that live in the clone and nowhere else.
 # keep-on-remove = [
 #   "notes/**",
+# ]
+
+# Branches whose commits never stop a removal, even when GitHub does not have them. Patterns
+# match a branch name, with '*' and '?' as in a shell, and '*' crosses '/'. Use it for
+# branches you keep as a safety net and throw away with the clone.
+# throwaway-branches = [
+#   "backup/*",
 # ]
 
 [maven]
@@ -691,10 +699,33 @@ def _log_commit_subjects(folder: Path, what: str, commits: list[str], log: LogFn
         log(f"  There are {more} more.")
 
 
+def is_throwaway_branch(branch: str, patterns: Sequence[str]) -> bool:
+    """True when branch matches one of the patterns of workspace.throwaway-branches (D62).
+
+    A pattern is matched against the whole branch name, with '*' and '?' as in a shell, and
+    '*' crosses '/'. So "backup/*" matches "backup/old" and "backup/feature/old" alike.
+    """
+    return any(fnmatchcase(branch, pattern) for pattern in patterns)
+
+
 @dataclass(frozen=True)
 class _UnsavedWork:
     reasons: list[str]
     merge_commits: int
+
+
+@dataclass(frozen=True)
+class _CommitCheck:
+    """One place to look for commits that GitHub does not have.
+
+    rev is what to look at, what names it in a sentence, saved_refs are the refs that count as
+    saved, and thrown_away is true for a branch of workspace.throwaway-branches (D62).
+    """
+
+    rev: str
+    what: str
+    saved_refs: list[str]
+    thrown_away: bool = False
 
 
 def _find_unsaved_work(ws: Workspace, folder: Path, log: LogFn) -> _UnsavedWork:
@@ -740,23 +771,38 @@ def _find_unsaved_work(ws: Workspace, folder: Path, log: LogFn) -> _UnsavedWork:
     if operation:
         reasons.append(f"A {operation} is in progress, and its work would be lost.")
 
+    throwaway = ws.config.workspace.throwaway_branches
     branches = git(folder, "for-each-ref", "--format=%(refname)", "refs/heads/").stdout
-    checks: list[tuple[str, str, list[str]]] = [
-        (ref, f"Branch {ref.removeprefix('refs/heads/')}", ["--remotes"])
+    checks = [
+        _CommitCheck(
+            rev=ref,
+            what=f"Branch {ref.removeprefix('refs/heads/')}",
+            saved_refs=["--remotes"],
+            thrown_away=is_throwaway_branch(ref.removeprefix("refs/heads/"), throwaway),
+        )
         for ref in branches.splitlines()
         if ref
     ]
     if git(folder, "symbolic-ref", "--quiet", "HEAD", check=False).code != 0:
         # A detached HEAD can have commits that are on no branch at all, for example while a
         # rebase runs. Commits that are on a local branch are counted with that branch.
-        checks.append(("HEAD", "The detached HEAD", ["--remotes", "--branches"]))
+        checks.append(_CommitCheck("HEAD", "The detached HEAD", ["--remotes", "--branches"]))
 
-    for rev, what, saved_refs in checks:
-        unsaved = _unsaved_commits(folder, rev, saved_refs, default_ref)
-        if unsaved.commits:
-            reasons.append(_commits_sentence(what, unsaved))
-            merge_commits += unsaved.merge_commits
-            _log_commit_subjects(folder, what.lower(), unsaved.commits, log)
+    for check in checks:
+        unsaved = _unsaved_commits(folder, check.rev, check.saved_refs, default_ref)
+        if not unsaved.commits:
+            continue
+        _log_commit_subjects(folder, check.what.lower(), unsaved.commits, log)
+        if check.thrown_away:
+            # The branch is one the user throws away on purpose, so it never stops the removal
+            # (D62). It is still logged, so nothing goes unseen.
+            log(
+                f"{check.what} matches workspace.throwaway-branches, so these commits do not "
+                "stop the removal."
+            )
+            continue
+        reasons.append(_commits_sentence(check.what, unsaved))
+        merge_commits += unsaved.merge_commits
 
     return _UnsavedWork(reasons=reasons, merge_commits=merge_commits)
 

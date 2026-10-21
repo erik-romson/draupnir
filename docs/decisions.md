@@ -51,7 +51,20 @@ it can hold work.
 **D32. What `remove` checks.** An operation in progress and commits on a detached HEAD count as
 unsaved work. `--force` skips the fetch and the unsaved-work checks, but never the checks on the
 folder: `main/`, the root, and a folder that is not a clone of the project are always refused.
-`remove` checks the folder, then asks, and only then goes to the network.
+`remove` checks the folder, then asks, and only then goes to the network. D62 added the one
+branch that may be thrown away.
+
+**D62. Branches that are meant to be thrown away.** The check walks every local branch of the
+clone, so a branch kept as a safety net before a rebase holds the clone long after the work on
+it was merged. The answer is not to stop looking at other branches, because a branch nobody
+pushed is exactly the work that would be lost. So `workspace.throwaway-branches` names them:
+a pattern matched against the whole branch name, with `*` and `?` as in a shell and `*` crossing
+`/`, so `backup/*` covers `backup/old` and `backup/feature/old` alike. A branch that matches
+never stops a removal, and its commits are still written into the output with a line that says
+why they did not stop it, because a user who set the pattern a month ago should still see what
+goes. `--force` stays the way out for a branch the config does not name. Rejected: a rule of
+draupnir's own about what a backup branch is called, because the names are a team's habit, not
+a standard, and a tool that guesses them deletes commits nobody meant to lose.
 
 ## Git and GitHub actions
 

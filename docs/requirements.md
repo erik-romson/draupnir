@@ -140,6 +140,9 @@ in the [user guide](guide.md#concepts).
   where they are, so nothing is deleted unseen. `keep-on-remove` lists patterns whose files are
   copied into `removed/<clone>-<date>/` in the workspace root before the clone is deleted. A copy
   that fails stops the removal.
+- **R31.** `throwaway-branches` lists patterns for local branches whose commits never stop a
+  removal, such as the backups kept before a rebase. Their commits are still shown. Every other
+  branch counts as before.
 
 ## Things outside this tool
 

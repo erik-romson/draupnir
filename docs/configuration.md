@@ -33,6 +33,13 @@ local-files = [
 keep-on-remove = [
   "notes/**",
 ]
+# Branches whose commits never stop a removal, even when GitHub does not have them. Each line
+# matches a branch name, with '*' and '?' as in a shell, and '*' crosses '/'. Use it for
+# branches you keep as a safety net and throw away with the clone.
+# Default: every branch counts. See "Removing a clone" below.
+throwaway-branches = [
+  "backup/*",
+]
 
 [maven]
 # Default: true when main/ has a pom.xml.
@@ -140,6 +147,31 @@ have, not the files you asked to keep.
 A plan written for a change belongs with the change once the work is done: in the issue it was
 written for, or in the commit history. `removed/` is the safety net for the day the clone goes
 before that happened.
+
+### Branches that are meant to be thrown away
+
+`remove` also refuses while a local branch holds commits that GitHub does not have. It looks at
+every branch in the clone, not only the one that is checked out, so a branch kept as a safety
+net before a rebase keeps the clone alive long after the work itself is merged:
+
+```
+draupnir did not delete /work/shop/feature-login, because it has work that is not on GitHub.
+- Branch backup/feature-login-20260101 has 6 commits that are not on GitHub, and none of them
+  is a merge commit.
+```
+
+`throwaway-branches` names the branches that may go with the clone:
+
+```toml
+[workspace]
+throwaway-branches = ["backup/*"]
+```
+
+A pattern matches a whole branch name, with `*` and `?` as in a shell, and `*` crosses `/`, so
+`backup/*` covers `backup/old` and `backup/feature/old` alike. A branch that matches never stops
+a removal. Its commits are still written into the output, with a line that says why they did not
+stop it, so nothing goes unseen. Every other branch still counts, and so does the work in the
+working tree, the stashes and an operation in progress.
 
 ### Where to keep plans
 

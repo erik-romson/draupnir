@@ -41,6 +41,10 @@ def _configure_keep_on_remove(root: Path, paths: list[str]) -> None:
     _configure_workspace(root, "keep-on-remove", paths)
 
 
+def _configure_throwaway_branches(root: Path, patterns: list[str]) -> None:
+    _configure_workspace(root, "throwaway-branches", patterns)
+
+
 def _configure_workspace(root: Path, key: str, paths: list[str]) -> None:
     quoted = ", ".join(f'"{path}"' for path in paths)
     line = f"{key} = [{quoted}]"
@@ -795,6 +799,42 @@ def test_remove_refuses_unpushed_commits_on_any_branch(env: Env) -> None:
 
     assert "Branch side-work has 1 commit that is not on GitHub" in message
     assert "Branch feature/checked-out" not in message
+
+
+def test_remove_accepts_a_branch_that_throwaway_branches_names(env: Env) -> None:
+    """A backup branch goes with the clone, and its commits are still shown (R31, D62)."""
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/with-backup", None, log)
+    sh(folder, "git", "checkout", "-q", "-b", "backup/feature/with-backup-20260101")
+    commit(folder, "old.txt", "work before the rebase\n", "the commit the backup keeps")
+    sh(folder, "git", "checkout", "-q", "feature/with-backup")
+    _configure_throwaway_branches(env.root, ["backup/*"])
+
+    lines, log = logger()
+    remove_clone(env.ws(), folder, False, log)
+
+    assert not folder.exists()
+    output = "\n".join(lines)
+    assert "the commit the backup keeps" in output
+    assert "matches workspace.throwaway-branches" in output
+
+
+def test_remove_refuses_a_branch_that_throwaway_branches_does_not_name(env: Env) -> None:
+    """Only the branches of the patterns are thrown away. Every other branch still counts."""
+    _, log = logger()
+    folder = new_clone(env.ws(), "feature/mixed", None, log)
+    sh(folder, "git", "checkout", "-q", "-b", "backup/feature/mixed-20260101")
+    commit(folder, "old.txt", "work before the rebase\n", "the commit the backup keeps")
+    sh(folder, "git", "checkout", "-q", "feature/mixed")
+    sh(folder, "git", "checkout", "-q", "-b", "side-work")
+    commit(folder, "side.txt", "side work\n", "work on a branch nobody pushed")
+    sh(folder, "git", "checkout", "-q", "feature/mixed")
+    _configure_throwaway_branches(env.root, ["backup/*"])
+
+    message = _refused_removal(env, folder)
+
+    assert "Branch side-work has 1 commit that is not on GitHub" in message
+    assert "backup/feature/mixed-20260101" not in message
 
 
 def test_remove_accepts_commits_that_were_rebase_merged_and_whose_branch_was_deleted(

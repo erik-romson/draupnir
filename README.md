@@ -113,6 +113,11 @@ Delete /work/shop/feature-login with its .m2repo and local files?
 is deleted, into `removed/` next to `main/`. See
 [Removing a clone](docs/configuration.md#removing-a-clone).
 
+A removal also stops while any local branch holds commits GitHub does not have, which keeps a
+clone alive over a backup branch kept before a rebase. `throwaway-branches = ["backup/*"]` under
+`[workspace]` names the branches that may go with the clone. Their commits are still shown. See
+[Branches that are meant to be thrown away](docs/configuration.md#branches-that-are-meant-to-be-thrown-away).
+
 ### The status in the cmux sidebar
 
 A dashboard that runs in cmux writes one line about its clones into the sidebar row of its own
